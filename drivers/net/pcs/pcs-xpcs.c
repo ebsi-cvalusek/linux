@@ -309,7 +309,7 @@ static int xpcs_read_fault_c73(struct dw_xpcs *xpcs,
 	return 0;
 }
 
-static int xpcs_read_link_c73(struct dw_xpcs *xpcs)
+static int xpcs_read_link_c73(struct dw_xpcs *xpcs, bool an)
 {
 	bool link = true;
 	int ret;
@@ -320,6 +320,15 @@ static int xpcs_read_link_c73(struct dw_xpcs *xpcs)
 
 	if (!(ret & MDIO_STAT1_LSTATUS))
 		link = false;
+
+	if (an) {
+		ret = xpcs_read(xpcs, MDIO_MMD_AN, MDIO_STAT1);
+		if (ret < 0)
+			return ret;
+
+		if (!(ret & MDIO_STAT1_LSTATUS))
+			link = false;
+	}
 
 	return link;
 }
@@ -838,7 +847,7 @@ static int xpcs_get_state_c73(struct dw_xpcs *xpcs,
 	int ret;
 
 	/* Link needs to be read first ... */
-	state->link = xpcs_read_link_c73(xpcs) > 0 ? 1 : 0;
+	state->link = xpcs_read_link_c73(xpcs, state->an_enabled) > 0 ? 1 : 0;
 
 	/* ... and then we check the faults. */
 	ret = xpcs_read_fault_c73(xpcs, state);
@@ -881,7 +890,7 @@ static int xpcs_get_state_c37_sgmii(struct dw_xpcs *xpcs,
 	 */
 	ret = xpcs_read(xpcs, MDIO_MMD_VEND2, DW_VR_MII_AN_INTR_STS);
 	if (ret < 0)
-		return ret;
+		return false;
 
 	if (ret & DW_VR_MII_C37_ANSGM_SP_LNKSTS) {
 		int speed_value;

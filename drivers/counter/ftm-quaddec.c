@@ -14,7 +14,6 @@
 #include <linux/mutex.h>
 #include <linux/counter.h>
 #include <linux/bitfield.h>
-#include <linux/types.h>
 
 #define FTM_FIELD_UPDATE(ftm, offset, mask, val)			\
 	({								\
@@ -116,7 +115,8 @@ static void ftm_quaddec_disable(void *ftm)
 }
 
 static int ftm_quaddec_get_prescaler(struct counter_device *counter,
-				     struct counter_count *count, u32 *cnt_mode)
+				     struct counter_count *count,
+				     size_t *cnt_mode)
 {
 	struct ftm_quaddec *ftm = counter->priv;
 	uint32_t scflags;
@@ -129,7 +129,8 @@ static int ftm_quaddec_get_prescaler(struct counter_device *counter,
 }
 
 static int ftm_quaddec_set_prescaler(struct counter_device *counter,
-				     struct counter_count *count, u32 cnt_mode)
+				     struct counter_count *count,
+				     size_t cnt_mode)
 {
 	struct ftm_quaddec *ftm = counter->priv;
 
@@ -150,17 +151,33 @@ static const char * const ftm_quaddec_prescaler[] = {
 	"1", "2", "4", "8", "16", "32", "64", "128"
 };
 
+static struct counter_count_enum_ext ftm_quaddec_prescaler_enum = {
+	.items = ftm_quaddec_prescaler,
+	.num_items = ARRAY_SIZE(ftm_quaddec_prescaler),
+	.get = ftm_quaddec_get_prescaler,
+	.set = ftm_quaddec_set_prescaler
+};
+
+enum ftm_quaddec_synapse_action {
+	FTM_QUADDEC_SYNAPSE_ACTION_BOTH_EDGES,
+};
+
 static const enum counter_synapse_action ftm_quaddec_synapse_actions[] = {
+	[FTM_QUADDEC_SYNAPSE_ACTION_BOTH_EDGES] =
 	COUNTER_SYNAPSE_ACTION_BOTH_EDGES
 };
 
+enum ftm_quaddec_count_function {
+	FTM_QUADDEC_COUNT_ENCODER_MODE_1,
+};
+
 static const enum counter_function ftm_quaddec_count_functions[] = {
-	COUNTER_FUNCTION_QUADRATURE_X4
+	[FTM_QUADDEC_COUNT_ENCODER_MODE_1] = COUNTER_FUNCTION_QUADRATURE_X4
 };
 
 static int ftm_quaddec_count_read(struct counter_device *counter,
 				  struct counter_count *count,
-				  u64 *val)
+				  unsigned long *val)
 {
 	struct ftm_quaddec *const ftm = counter->priv;
 	uint32_t cntval;
@@ -174,7 +191,7 @@ static int ftm_quaddec_count_read(struct counter_device *counter,
 
 static int ftm_quaddec_count_write(struct counter_device *counter,
 				   struct counter_count *count,
-				   const u64 val)
+				   const unsigned long val)
 {
 	struct ftm_quaddec *const ftm = counter->priv;
 
@@ -188,21 +205,21 @@ static int ftm_quaddec_count_write(struct counter_device *counter,
 	return 0;
 }
 
-static int ftm_quaddec_count_function_read(struct counter_device *counter,
-					   struct counter_count *count,
-					   enum counter_function *function)
+static int ftm_quaddec_count_function_get(struct counter_device *counter,
+					  struct counter_count *count,
+					  size_t *function)
 {
-	*function = COUNTER_FUNCTION_QUADRATURE_X4;
+	*function = FTM_QUADDEC_COUNT_ENCODER_MODE_1;
 
 	return 0;
 }
 
-static int ftm_quaddec_action_read(struct counter_device *counter,
-				   struct counter_count *count,
-				   struct counter_synapse *synapse,
-				   enum counter_synapse_action *action)
+static int ftm_quaddec_action_get(struct counter_device *counter,
+				  struct counter_count *count,
+				  struct counter_synapse *synapse,
+				  size_t *action)
 {
-	*action = COUNTER_SYNAPSE_ACTION_BOTH_EDGES;
+	*action = FTM_QUADDEC_SYNAPSE_ACTION_BOTH_EDGES;
 
 	return 0;
 }
@@ -210,8 +227,8 @@ static int ftm_quaddec_action_read(struct counter_device *counter,
 static const struct counter_ops ftm_quaddec_cnt_ops = {
 	.count_read = ftm_quaddec_count_read,
 	.count_write = ftm_quaddec_count_write,
-	.function_read = ftm_quaddec_count_function_read,
-	.action_read = ftm_quaddec_action_read,
+	.function_get = ftm_quaddec_count_function_get,
+	.action_get = ftm_quaddec_action_get,
 };
 
 static struct counter_signal ftm_quaddec_signals[] = {
@@ -238,12 +255,9 @@ static struct counter_synapse ftm_quaddec_count_synapses[] = {
 	}
 };
 
-static DEFINE_COUNTER_ENUM(ftm_quaddec_prescaler_enum, ftm_quaddec_prescaler);
-
-static struct counter_comp ftm_quaddec_count_ext[] = {
-	COUNTER_COMP_COUNT_ENUM("prescaler", ftm_quaddec_get_prescaler,
-				ftm_quaddec_set_prescaler,
-				ftm_quaddec_prescaler_enum),
+static const struct counter_count_ext ftm_quaddec_count_ext[] = {
+	COUNTER_COUNT_ENUM("prescaler", &ftm_quaddec_prescaler_enum),
+	COUNTER_COUNT_ENUM_AVAILABLE("prescaler", &ftm_quaddec_prescaler_enum),
 };
 
 static struct counter_count ftm_quaddec_counts = {

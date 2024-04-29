@@ -283,8 +283,8 @@ static inline int gve_skb_fifo_bytes_required(struct gve_tx_ring *tx,
 	int bytes;
 	int hlen;
 
-	hlen = skb_is_gso(skb) ? skb_checksum_start_offset(skb) + tcp_hdrlen(skb) :
-				 min_t(int, GVE_GQ_TX_MIN_PKT_DESC_BYTES, skb->len);
+	hlen = skb_is_gso(skb) ? skb_checksum_start_offset(skb) +
+				 tcp_hdrlen(skb) : skb_headlen(skb);
 
 	pad_bytes = gve_tx_fifo_pad_alloc_one_frag(&tx->tx_fifo,
 						   hlen);
@@ -303,15 +303,15 @@ static inline int gve_skb_fifo_bytes_required(struct gve_tx_ring *tx,
 static void gve_tx_unmap_buf(struct device *dev, struct gve_tx_buffer_state *info)
 {
 	if (info->skb) {
-		dma_unmap_single(dev, dma_unmap_addr(info, dma),
-				 dma_unmap_len(info, len),
+		dma_unmap_single(dev, dma_unmap_addr(&info->buf, dma),
+				 dma_unmap_len(&info->buf, len),
 				 DMA_TO_DEVICE);
-		dma_unmap_len_set(info, len, 0);
+		dma_unmap_len_set(&info->buf, len, 0);
 	} else {
-		dma_unmap_page(dev, dma_unmap_addr(info, dma),
-			       dma_unmap_len(info, len),
+		dma_unmap_page(dev, dma_unmap_addr(&info->buf, dma),
+			       dma_unmap_len(&info->buf, len),
 			       DMA_TO_DEVICE);
-		dma_unmap_len_set(info, len, 0);
+		dma_unmap_len_set(&info->buf, len, 0);
 	}
 }
 
@@ -431,11 +431,13 @@ static int gve_tx_add_skb_copy(struct gve_priv *priv, struct gve_tx_ring *tx, st
 	pkt_desc = &tx->desc[idx];
 
 	l4_hdr_offset = skb_checksum_start_offset(skb);
-	/* If the skb is gso, then we want the tcp header alone in the first segment
-	 * otherwise we want the minimum required by the gVNIC spec.
+	/* If the skb is gso, then we want the tcp header in the first segment
+	 * otherwise we want the linear portion of the skb (which will contain
+	 * the checksum because skb->csum_start and skb->csum_offset are given
+	 * relative to skb->head) in the first segment.
 	 */
 	hlen = is_gso ? l4_hdr_offset + tcp_hdrlen(skb) :
-			min_t(int, GVE_GQ_TX_MIN_PKT_DESC_BYTES, skb->len);
+			skb_headlen(skb);
 
 	info->skb =  skb;
 	/* We don't want to split the header, so if necessary, pad to the end
@@ -489,6 +491,7 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 	struct gve_tx_buffer_state *info;
 	bool is_gso = skb_is_gso(skb);
 	u32 idx = tx->req & tx->mask;
+	struct gve_tx_dma_buf *buf;
 	u64 addr;
 	u32 len;
 	int i;
@@ -512,8 +515,9 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 		tx->dma_mapping_error++;
 		goto drop;
 	}
-	dma_unmap_len_set(info, len, len);
-	dma_unmap_addr_set(info, dma, addr);
+	buf = &info->buf;
+	dma_unmap_len_set(buf, len, len);
+	dma_unmap_addr_set(buf, dma, addr);
 
 	payload_nfrags = shinfo->nr_frags;
 	if (hlen < len) {
@@ -545,9 +549,10 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 			tx->dma_mapping_error++;
 			goto unmap_drop;
 		}
+		buf = &tx->info[idx].buf;
 		tx->info[idx].skb = NULL;
-		dma_unmap_len_set(&tx->info[idx], len, len);
-		dma_unmap_addr_set(&tx->info[idx], dma, addr);
+		dma_unmap_len_set(buf, len, len);
+		dma_unmap_addr_set(buf, dma, addr);
 
 		gve_tx_fill_seg_desc(seg_desc, skb, is_gso, len, addr);
 	}

@@ -315,13 +315,17 @@ static int acpi_scan_device_check(struct acpi_device *adev)
 		 * again).
 		 */
 		if (adev->handler) {
-			dev_dbg(&adev->dev, "Already enumerated\n");
-			return 0;
+			dev_warn(&adev->dev, "Already enumerated\n");
+			return -EALREADY;
 		}
 		error = acpi_bus_scan(adev->handle);
 		if (error) {
 			dev_warn(&adev->dev, "Namespace scan failure\n");
 			return error;
+		}
+		if (!adev->handler) {
+			dev_warn(&adev->dev, "Enumeration failure\n");
+			error = -ENODEV;
 		}
 	} else {
 		error = acpi_scan_device_not_present(adev);
@@ -789,7 +793,6 @@ static bool acpi_info_matches_ids(struct acpi_device_info *info,
 static const char * const acpi_ignore_dep_ids[] = {
 	"PNP0D80", /* Windows-compatible System Power Management Controller */
 	"INT33BD", /* Intel Baytrail Mailbox Device */
-	"LATT2021", /* Lattice FW Update Client Driver */
 	NULL
 };
 
@@ -1687,7 +1690,6 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 {
 	struct list_head resource_list;
 	bool is_serial_bus_slave = false;
-	static const struct acpi_device_id ignore_serial_bus_ids[] = {
 	/*
 	 * These devices have multiple I2cSerialBus resources and an i2c-client
 	 * must be instantiated for each, each with its own i2c_device_id.
@@ -1696,18 +1698,11 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 	 * drivers/platform/x86/i2c-multi-instantiate.c driver, which knows
 	 * which i2c_device_id to use for each resource.
 	 */
+	static const struct acpi_device_id i2c_multi_instantiate_ids[] = {
 		{"BSG1160", },
 		{"BSG2150", },
 		{"INT33FE", },
 		{"INT3515", },
-	/*
-	 * HIDs of device with an UartSerialBusV2 resource for which userspace
-	 * expects a regular tty cdev to be created (instead of the in kernel
-	 * serdev) and which have a kernel driver which expects a platform_dev
-	 * such as the rfkill-gpio driver.
-	 */
-		{"BCM4752", },
-		{"LNV4752", },
 		{}
 	};
 
@@ -1721,7 +1716,8 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 	     fwnode_property_present(&device->fwnode, "baud")))
 		return true;
 
-	if (!acpi_match_device_ids(device, ignore_serial_bus_ids))
+	/* Instantiate a pdev for the i2c-multi-instantiate drv to bind to */
+	if (!acpi_match_device_ids(device, i2c_multi_instantiate_ids))
 		return false;
 
 	INIT_LIST_HEAD(&resource_list);

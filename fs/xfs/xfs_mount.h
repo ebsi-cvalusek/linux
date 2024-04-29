@@ -61,14 +61,11 @@ struct xfs_error_cfg {
  */
 struct xfs_inodegc {
 	struct llist_head	list;
-	struct delayed_work	work;
+	struct work_struct	work;
 
 	/* approximate count of inodes in the list */
 	unsigned int		items;
 	unsigned int		shrinker_hits;
-#if defined(DEBUG) || defined(XFS_WARN)
-	unsigned int		cpu;
-#endif
 };
 
 /*
@@ -480,21 +477,6 @@ extern void	xfs_unmountfs(xfs_mount_t *);
  * we get near to ENOSPC and we have to be very accurate with our updates.
  */
 #define XFS_FDBLOCKS_BATCH	1024
-
-/*
- * Estimate the amount of free space that is not available to userspace and is
- * not explicitly reserved from the incore fdblocks.  This includes:
- *
- * - The minimum number of blocks needed to support splitting a bmap btree
- * - The blocks currently in use by the freespace btrees because they record
- *   the actual blocks that will fill per-AG metadata space reservations
- */
-static inline uint64_t
-xfs_fdblocks_unavailable(
-	struct xfs_mount	*mp)
-{
-	return mp->m_alloc_set_aside + atomic64_read(&mp->m_allocbt_blks);
-}
 
 extern int	xfs_mod_fdblocks(struct xfs_mount *mp, int64_t delta,
 				 bool reserved);

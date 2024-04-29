@@ -232,9 +232,7 @@ enum {
 
 	/* 1/64k is granular enough and can easily be handled w/ u32 */
 	WEIGHT_ONE		= 1 << 16,
-};
 
-enum {
 	/*
 	 * As vtime is used to calculate the cost of each IO, it needs to
 	 * be fairly high precision.  For example, it should be able to
@@ -258,11 +256,6 @@ enum {
 	VRATE_MIN		= VTIME_PER_USEC * VRATE_MIN_PPM / MILLION,
 	VRATE_CLAMP_ADJ_PCT	= 4,
 
-	/* switch iff the conditions are met for longer than this */
-	AUTOP_CYCLE_NSEC	= 10LLU * NSEC_PER_SEC,
-};
-
-enum {
 	/* if IOs end up waiting for requests, issue less */
 	RQ_WAIT_BUSY_PCT	= 5,
 
@@ -300,6 +293,9 @@ enum {
 
 	/* don't let cmds which take a very long time pin lagging for too long */
 	MAX_LAGGING_PERIODS	= 10,
+
+	/* switch iff the conditions are met for longer than this */
+	AUTOP_CYCLE_NSEC	= 10LLU * NSEC_PER_SEC,
 
 	/*
 	 * Count IO size in 4k pages.  The 12bit shift helps keeping
@@ -874,14 +870,9 @@ static void calc_lcoefs(u64 bps, u64 seqiops, u64 randiops,
 
 	*page = *seqio = *randio = 0;
 
-	if (bps) {
-		u64 bps_pages = DIV_ROUND_UP_ULL(bps, IOC_PAGE_SIZE);
-
-		if (bps_pages)
-			*page = DIV64_U64_ROUND_UP(VTIME_PER_SEC, bps_pages);
-		else
-			*page = 1;
-	}
+	if (bps)
+		*page = DIV64_U64_ROUND_UP(VTIME_PER_SEC,
+					   DIV_ROUND_UP_ULL(bps, IOC_PAGE_SIZE));
 
 	if (seqiops) {
 		v = DIV64_U64_ROUND_UP(VTIME_PER_SEC, seqiops);
@@ -1341,13 +1332,6 @@ static bool iocg_kick_delay(struct ioc_gq *iocg, struct ioc_now *now)
 	u32 hwa;
 
 	lockdep_assert_held(&iocg->waitq.lock);
-
-	/*
-	 * If the delay is set by another CPU, we may be in the past. No need to
-	 * change anything if so. This avoids decay calculation underflow.
-	 */
-	if (time_before64(now->now, iocg->delay_at))
-		return false;
 
 	/* calculate the current delay in effect - 1/2 every second */
 	tdelta = now->now - iocg->delay_at;
@@ -2327,28 +2311,11 @@ static void ioc_timer_fn(struct timer_list *timer)
 			hwm = current_hweight_max(iocg);
 			new_hwi = hweight_after_donation(iocg, old_hwi, hwm,
 							 usage, &now);
-			/*
-			 * Donation calculation assumes hweight_after_donation
-			 * to be positive, a condition that a donor w/ hwa < 2
-			 * can't meet. Don't bother with donation if hwa is
-			 * below 2. It's not gonna make a meaningful difference
-			 * anyway.
-			 */
-			if (new_hwi < hwm && hwa >= 2) {
+			if (new_hwi < hwm) {
 				iocg->hweight_donating = hwa;
 				iocg->hweight_after_donation = new_hwi;
 				list_add(&iocg->surplus_list, &surpluses);
-			} else if (!iocg->abs_vdebt) {
-				/*
-				 * @iocg doesn't have enough to donate. Reset
-				 * its inuse to active.
-				 *
-				 * Don't reset debtors as their inuse's are
-				 * owned by debt handling. This shouldn't affect
-				 * donation calculuation in any meaningful way
-				 * as @iocg doesn't have a meaningful amount of
-				 * share anyway.
-				 */
+			} else {
 				TRACE_IOCG_PATH(inuse_shortage, iocg, &now,
 						iocg->inuse, iocg->active,
 						iocg->hweight_inuse, new_hwi);
@@ -2455,7 +2422,6 @@ static u64 adjust_inuse_and_calc_cost(struct ioc_gq *iocg, u64 vtime,
 	u32 hwi, adj_step;
 	s64 margin;
 	u64 cost, new_inuse;
-	unsigned long flags;
 
 	current_hweight(iocg, NULL, &hwi);
 	old_hwi = hwi;
@@ -2474,11 +2440,11 @@ static u64 adjust_inuse_and_calc_cost(struct ioc_gq *iocg, u64 vtime,
 	    iocg->inuse == iocg->active)
 		return cost;
 
-	spin_lock_irqsave(&ioc->lock, flags);
+	spin_lock_irq(&ioc->lock);
 
 	/* we own inuse only when @iocg is in the normal active state */
 	if (iocg->abs_vdebt || list_empty(&iocg->active_list)) {
-		spin_unlock_irqrestore(&ioc->lock, flags);
+		spin_unlock_irq(&ioc->lock);
 		return cost;
 	}
 
@@ -2499,7 +2465,7 @@ static u64 adjust_inuse_and_calc_cost(struct ioc_gq *iocg, u64 vtime,
 	} while (time_after64(vtime + cost, now->vnow) &&
 		 iocg->inuse != iocg->active);
 
-	spin_unlock_irqrestore(&ioc->lock, flags);
+	spin_unlock_irq(&ioc->lock);
 
 	TRACE_IOCG_PATH(inuse_adjust, iocg, now,
 			old_inuse, iocg->inuse, old_hwi, hwi);
@@ -2910,21 +2876,15 @@ static int blk_iocost_init(struct request_queue *q)
 	 * called before policy activation completion, can't assume that the
 	 * target bio has an iocg associated and need to test for NULL iocg.
 	 */
-	ret = rq_qos_add(q, rqos);
-	if (ret)
-		goto err_free_ioc;
-
+	rq_qos_add(q, rqos);
 	ret = blkcg_activate_policy(q, &blkcg_policy_iocost);
-	if (ret)
-		goto err_del_qos;
+	if (ret) {
+		rq_qos_del(q, rqos);
+		free_percpu(ioc->pcpu_stat);
+		kfree(ioc);
+		return ret;
+	}
 	return 0;
-
-err_del_qos:
-	rq_qos_del(q, rqos);
-err_free_ioc:
-	free_percpu(ioc->pcpu_stat);
-	kfree(ioc);
-	return ret;
 }
 
 static struct blkcg_policy_data *ioc_cpd_alloc(gfp_t gfp)

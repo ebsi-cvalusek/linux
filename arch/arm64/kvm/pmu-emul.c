@@ -554,7 +554,6 @@ void kvm_pmu_software_increment(struct kvm_vcpu *vcpu, u64 val)
 			__vcpu_sys_reg(vcpu, PMOVSSET_EL0) |= BIT(i);
 		}
 	}
-	kvm_vcpu_pmu_restore_guest(vcpu);
 }
 
 /**

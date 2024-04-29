@@ -137,7 +137,8 @@ kill_whiteout:
 	goto out;
 }
 
-int ovl_mkdir_real(struct inode *dir, struct dentry **newdentry, umode_t mode)
+static int ovl_mkdir_real(struct inode *dir, struct dentry **newdentry,
+			  umode_t mode)
 {
 	int err;
 	struct dentry *d, *dentry = *newdentry;
@@ -267,7 +268,8 @@ static int ovl_instantiate(struct dentry *dentry, struct inode *inode,
 
 	ovl_dir_modified(dentry->d_parent, false);
 	ovl_dentry_set_upper_alias(dentry);
-	ovl_dentry_init_reval(dentry, newdentry);
+	ovl_dentry_update_reval(dentry, newdentry,
+			DCACHE_OP_REVALIDATE | DCACHE_OP_WEAK_REVALIDATE);
 
 	if (!hardlink) {
 		/*
@@ -588,42 +590,28 @@ static int ovl_create_or_link(struct dentry *dentry, struct inode *inode,
 			goto out_revert_creds;
 	}
 
-	if (!attr->hardlink) {
-		err = -ENOMEM;
-		override_cred = prepare_creds();
-		if (!override_cred)
-			goto out_revert_creds;
-		/*
-		 * In the creation cases(create, mkdir, mknod, symlink),
-		 * ovl should transfer current's fs{u,g}id to underlying
-		 * fs. Because underlying fs want to initialize its new
-		 * inode owner using current's fs{u,g}id. And in this
-		 * case, the @inode is a new inode that is initialized
-		 * in inode_init_owner() to current's fs{u,g}id. So use
-		 * the inode's i_{u,g}id to override the cred's fs{u,g}id.
-		 *
-		 * But in the other hardlink case, ovl_link() does not
-		 * create a new inode, so just use the ovl mounter's
-		 * fs{u,g}id.
-		 */
+	err = -ENOMEM;
+	override_cred = prepare_creds();
+	if (override_cred) {
 		override_cred->fsuid = inode->i_uid;
 		override_cred->fsgid = inode->i_gid;
-		err = security_dentry_create_files_as(dentry,
-				attr->mode, &dentry->d_name, old_cred,
-				override_cred);
-		if (err) {
-			put_cred(override_cred);
-			goto out_revert_creds;
+		if (!attr->hardlink) {
+			err = security_dentry_create_files_as(dentry,
+					attr->mode, &dentry->d_name, old_cred,
+					override_cred);
+			if (err) {
+				put_cred(override_cred);
+				goto out_revert_creds;
+			}
 		}
 		put_cred(override_creds(override_cred));
 		put_cred(override_cred);
+
+		if (!ovl_dentry_is_whiteout(dentry))
+			err = ovl_create_upper(dentry, inode, attr);
+		else
+			err = ovl_create_over_whiteout(dentry, inode, attr);
 	}
-
-	if (!ovl_dentry_is_whiteout(dentry))
-		err = ovl_create_upper(dentry, inode, attr);
-	else
-		err = ovl_create_over_whiteout(dentry, inode, attr);
-
 out_revert_creds:
 	revert_creds(old_cred);
 	return err;
@@ -893,6 +881,7 @@ static int ovl_do_remove(struct dentry *dentry, bool is_dir)
 {
 	int err;
 	const struct cred *old_cred;
+	struct dentry *upperdentry;
 	bool lower_positive = ovl_lower_positive(dentry);
 	LIST_HEAD(list);
 
@@ -935,8 +924,9 @@ static int ovl_do_remove(struct dentry *dentry, bool is_dir)
 	 * Note: we fail to update ctime if there was no copy-up, only a
 	 * whiteout
 	 */
-	if (ovl_dentry_upper(dentry))
-		ovl_copyattr(d_inode(dentry));
+	upperdentry = ovl_dentry_upper(dentry);
+	if (upperdentry)
+		ovl_copyattr(d_inode(upperdentry), d_inode(dentry));
 
 out_drop_write:
 	ovl_drop_write(dentry);
@@ -1283,9 +1273,9 @@ static int ovl_rename(struct user_namespace *mnt_userns, struct inode *olddir,
 			 (d_inode(new) && ovl_type_origin(new)));
 
 	/* copy ctime: */
-	ovl_copyattr(d_inode(old));
+	ovl_copyattr(d_inode(olddentry), d_inode(old));
 	if (d_inode(new) && ovl_dentry_upper(new))
-		ovl_copyattr(d_inode(new));
+		ovl_copyattr(d_inode(newdentry), d_inode(new));
 
 out_dput:
 	dput(newdentry);

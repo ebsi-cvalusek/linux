@@ -91,6 +91,11 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 	*off = 0;
 	*len = 0;
 
+	/* error reqeusts do not have data area */
+	if (hdr->Status && hdr->Status != STATUS_MORE_PROCESSING_REQUIRED &&
+	    (((struct smb2_err_rsp *)hdr)->StructureSize) == SMB2_ERROR_STRUCTURE_SIZE2_LE)
+		return ret;
+
 	/*
 	 * Following commands have data areas so we have to get the location
 	 * of the data buffer offset and data buffer length for the particular
@@ -107,25 +112,16 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		break;
 	case SMB2_CREATE:
 	{
-		unsigned short int name_off =
-			le16_to_cpu(((struct smb2_create_req *)hdr)->NameOffset);
-		unsigned short int name_len =
-			le16_to_cpu(((struct smb2_create_req *)hdr)->NameLength);
-
 		if (((struct smb2_create_req *)hdr)->CreateContextsLength) {
 			*off = le32_to_cpu(((struct smb2_create_req *)
 				hdr)->CreateContextsOffset);
 			*len = le32_to_cpu(((struct smb2_create_req *)
 				hdr)->CreateContextsLength);
-			if (!name_len)
-				break;
-
-			if (name_off + name_len < (u64)*off + *len)
-				break;
+			break;
 		}
 
-		*off = name_off;
-		*len = name_len;
+		*off = le16_to_cpu(((struct smb2_create_req *)hdr)->NameOffset);
+		*len = le16_to_cpu(((struct smb2_create_req *)hdr)->NameLength);
 		break;
 	}
 	case SMB2_QUERY_INFO:
@@ -141,11 +137,8 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		*len = le16_to_cpu(((struct smb2_read_req *)hdr)->ReadChannelInfoLength);
 		break;
 	case SMB2_WRITE:
-		if (((struct smb2_write_req *)hdr)->DataOffset ||
-		    ((struct smb2_write_req *)hdr)->Length) {
-			*off = max_t(unsigned int,
-				     le16_to_cpu(((struct smb2_write_req *)hdr)->DataOffset),
-				     offsetof(struct smb2_write_req, Buffer) - 4);
+		if (((struct smb2_write_req *)hdr)->DataOffset) {
+			*off = le16_to_cpu(((struct smb2_write_req *)hdr)->DataOffset);
 			*len = le32_to_cpu(((struct smb2_write_req *)hdr)->Length);
 			break;
 		}
@@ -159,11 +152,15 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		break;
 	case SMB2_LOCK:
 	{
-		unsigned short lock_count;
+		int lock_count;
 
-		lock_count = le16_to_cpu(((struct smb2_lock_req *)hdr)->LockCount);
+		/*
+		 * smb2_lock request size is 48 included single
+		 * smb2_lock_element structure size.
+		 */
+		lock_count = le16_to_cpu(((struct smb2_lock_req *)hdr)->LockCount) - 1;
 		if (lock_count > 0) {
-			*off = offsetof(struct smb2_lock_req, locks);
+			*off = __SMB2_HEADER_STRUCTURE_SIZE + 48;
 			*len = sizeof(struct smb2_lock_element) * lock_count;
 		}
 		break;
@@ -293,7 +290,7 @@ static int smb2_validate_credit_charge(struct ksmbd_conn *conn,
 	unsigned int req_len = 0, expect_resp_len = 0, calc_credit_num, max_len;
 	unsigned short credit_charge = le16_to_cpu(hdr->CreditCharge);
 	void *__hdr = hdr;
-	int ret = 0;
+	int ret;
 
 	switch (hdr->Command) {
 	case SMB2_QUERY_INFO:
@@ -330,49 +327,43 @@ static int smb2_validate_credit_charge(struct ksmbd_conn *conn,
 		ksmbd_debug(SMB, "Insufficient credit charge, given: %d, needed: %d\n",
 			    credit_charge, calc_credit_num);
 		return 1;
-	} else if (credit_charge > conn->vals->max_credits) {
+	} else if (credit_charge > conn->max_credits) {
 		ksmbd_debug(SMB, "Too large credit charge: %d\n", credit_charge);
 		return 1;
 	}
 
 	spin_lock(&conn->credits_lock);
-	if (credit_charge > conn->total_credits) {
+	if (credit_charge <= conn->total_credits) {
+		conn->total_credits -= credit_charge;
+		ret = 0;
+	} else {
 		ksmbd_debug(SMB, "Insufficient credits granted, given: %u, granted: %u\n",
 			    credit_charge, conn->total_credits);
 		ret = 1;
 	}
-
-	if ((u64)conn->outstanding_credits + credit_charge > conn->total_credits) {
-		ksmbd_debug(SMB, "Limits exceeding the maximum allowable outstanding requests, given : %u, pending : %u\n",
-			    credit_charge, conn->outstanding_credits);
-		ret = 1;
-	} else
-		conn->outstanding_credits += credit_charge;
-
 	spin_unlock(&conn->credits_lock);
-
 	return ret;
 }
 
 int ksmbd_smb2_check_message(struct ksmbd_work *work)
 {
-	struct smb2_pdu *pdu = ksmbd_req_buf_next(work);
+	struct smb2_pdu *pdu = work->request_buf;
 	struct smb2_hdr *hdr = &pdu->hdr;
 	int command;
 	__u32 clc_len;  /* calculated length */
-	__u32 len = get_rfc1002_len(work->request_buf);
-	__u32 req_struct_size, next_cmd = le32_to_cpu(hdr->NextCommand);
+	__u32 len = get_rfc1002_len(pdu);
 
-	if ((u64)work->next_smb2_rcv_hdr_off + next_cmd > len) {
-		pr_err("next command(%u) offset exceeds smb msg size\n",
-				next_cmd);
-		return 1;
+	if (work->next_smb2_rcv_hdr_off) {
+		pdu = ksmbd_req_buf_next(work);
+		hdr = &pdu->hdr;
 	}
 
-	if (next_cmd > 0)
-		len = next_cmd;
-	else if (work->next_smb2_rcv_hdr_off)
+	if (le32_to_cpu(hdr->NextCommand) > 0) {
+		len = le32_to_cpu(hdr->NextCommand);
+	} else if (work->next_smb2_rcv_hdr_off) {
 		len -= work->next_smb2_rcv_hdr_off;
+		len = round_up(len, 8);
+	}
 
 	if (check_smb2_hdr(hdr))
 		return 1;
@@ -390,24 +381,24 @@ int ksmbd_smb2_check_message(struct ksmbd_work *work)
 	}
 
 	if (smb2_req_struct_sizes[command] != pdu->StructureSize2) {
-		if (!(command == SMB2_OPLOCK_BREAK_HE &&
-		    (le16_to_cpu(pdu->StructureSize2) == OP_BREAK_STRUCT_SIZE_20 ||
-		    le16_to_cpu(pdu->StructureSize2) == OP_BREAK_STRUCT_SIZE_21))) {
+		if (command != SMB2_OPLOCK_BREAK_HE &&
+		    (hdr->Status == 0 || pdu->StructureSize2 != SMB2_ERROR_STRUCTURE_SIZE2_LE)) {
+			/* error packets have 9 byte structure size */
+			ksmbd_debug(SMB,
+				    "Illegal request size %u for command %d\n",
+				    le16_to_cpu(pdu->StructureSize2), command);
+			return 1;
+		} else if (command == SMB2_OPLOCK_BREAK_HE &&
+			   hdr->Status == 0 &&
+			   le16_to_cpu(pdu->StructureSize2) != OP_BREAK_STRUCT_SIZE_20 &&
+			   le16_to_cpu(pdu->StructureSize2) != OP_BREAK_STRUCT_SIZE_21) {
 			/* special case for SMB2.1 lease break message */
 			ksmbd_debug(SMB,
-				"Illegal request size %u for command %d\n",
-				le16_to_cpu(pdu->StructureSize2), command);
+				    "Illegal request size %d for oplock break\n",
+				    le16_to_cpu(pdu->StructureSize2));
 			return 1;
 		}
 	}
-
-	req_struct_size = le16_to_cpu(pdu->StructureSize2) +
-		__SMB2_HEADER_STRUCTURE_SIZE;
-	if (command == SMB2_LOCK_HE)
-		req_struct_size -= sizeof(struct smb2_lock_element);
-
-	if (req_struct_size > len + 1)
-		return 1;
 
 	if (smb2_calc_size(hdr, &clc_len))
 		return 1;
@@ -425,22 +416,20 @@ int ksmbd_smb2_check_message(struct ksmbd_work *work)
 			goto validate_credit;
 
 		/*
-		 * SMB2 NEGOTIATE request will be validated when message
-		 * handling proceeds.
+		 * windows client also pad up to 8 bytes when compounding.
+		 * If pad is longer than eight bytes, log the server behavior
+		 * (once), since may indicate a problem but allow it and
+		 * continue since the frame is parseable.
 		 */
-		if (command == SMB2_NEGOTIATE_HE)
+		if (clc_len < len) {
+			ksmbd_debug(SMB,
+				    "cli req padded more than expected. Length %d not %d for cmd:%d mid:%llu\n",
+				    len, clc_len, command,
+				    le64_to_cpu(hdr->MessageId));
 			goto validate_credit;
+		}
 
-		/*
-		 * Allow a message that padded to 8byte boundary.
-		 * Linux 4.19.217 with smb 3.0.2 are sometimes
-		 * sending messages where the cls_len is exactly
-		 * 8 bytes less than len.
-		 */
-		if (clc_len < len && (len - clc_len) <= 8)
-			goto validate_credit;
-
-		pr_err_ratelimited(
+		ksmbd_debug(SMB,
 			    "cli req too short, len %d not %d. cmd:%d mid:%llu\n",
 			    len, clc_len, command,
 			    le64_to_cpu(hdr->MessageId));
@@ -450,8 +439,10 @@ int ksmbd_smb2_check_message(struct ksmbd_work *work)
 
 validate_credit:
 	if ((work->conn->vals->capabilities & SMB2_GLOBAL_CAP_LARGE_MTU) &&
-	    smb2_validate_credit_charge(work->conn, hdr))
+	    smb2_validate_credit_charge(work->conn, hdr)) {
+		work->conn->ops->set_rsp_status(work, STATUS_INVALID_PARAMETER);
 		return 1;
+	}
 
 	return 0;
 }

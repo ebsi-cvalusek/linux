@@ -121,9 +121,7 @@ static int mlx5e_ipsec_remove_trailer(struct sk_buff *skb, struct xfrm_state *x)
 
 	trailer_len = alen + plen + 2;
 
-	ret = pskb_trim(skb, skb->len - trailer_len);
-	if (unlikely(ret))
-		return ret;
+	pskb_trim(skb, skb->len - trailer_len);
 	if (skb->protocol == htons(ETH_P_IP)) {
 		ipv4hdr->tot_len = htons(ntohs(ipv4hdr->tot_len) - trailer_len);
 		ip_send_check(ipv4hdr);
@@ -159,20 +157,11 @@ static void mlx5e_ipsec_set_swp(struct sk_buff *skb,
 	/* Tunnel mode */
 	if (mode == XFRM_MODE_TUNNEL) {
 		eseg->swp_inner_l3_offset = skb_inner_network_offset(skb) / 2;
+		eseg->swp_inner_l4_offset = skb_inner_transport_offset(skb) / 2;
 		if (xo->proto == IPPROTO_IPV6)
 			eseg->swp_flags |= MLX5_ETH_WQE_SWP_INNER_L3_IPV6;
-
-		switch (xo->inner_ipproto) {
-		case IPPROTO_UDP:
+		if (inner_ip_hdr(skb)->protocol == IPPROTO_UDP)
 			eseg->swp_flags |= MLX5_ETH_WQE_SWP_INNER_L4_UDP;
-			fallthrough;
-		case IPPROTO_TCP:
-			/* IP | ESP | IP | [TCP | UDP] */
-			eseg->swp_inner_l4_offset = skb_inner_transport_offset(skb) / 2;
-			break;
-		default:
-			break;
-		}
 		return;
 	}
 
@@ -202,7 +191,7 @@ static void mlx5e_ipsec_set_swp(struct sk_buff *skb,
 			eseg->swp_inner_l3_offset = skb_inner_network_offset(skb) / 2;
 			eseg->swp_inner_l4_offset =
 				(skb->csum_start + skb->head - skb->data) / 2;
-			if (inner_ip_hdr(skb)->version == 6)
+			if (skb->protocol == htons(ETH_P_IPV6))
 				eseg->swp_flags |= MLX5_ETH_WQE_SWP_INNER_L3_IPV6;
 			break;
 		default:

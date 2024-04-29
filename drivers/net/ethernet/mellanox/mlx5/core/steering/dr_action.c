@@ -579,7 +579,6 @@ int mlx5dr_actions_build_ste_arr(struct mlx5dr_matcher *matcher,
 		switch (action_type) {
 		case DR_ACTION_TYP_DROP:
 			attr.final_icm_addr = nic_dmn->drop_icm_addr;
-			attr.hit_gvmi = nic_dmn->drop_icm_addr >> 48;
 			break;
 		case DR_ACTION_TYP_FT:
 			dest_action = action;
@@ -667,16 +666,16 @@ int mlx5dr_actions_build_ste_arr(struct mlx5dr_matcher *matcher,
 							action->sampler->tx_icm_addr;
 			break;
 		case DR_ACTION_TYP_VPORT:
-			if (unlikely(rx_rule && action->vport->caps->num == MLX5_VPORT_UPLINK)) {
-				/* can't go to uplink on RX rule - dropping instead */
-				attr.final_icm_addr = nic_dmn->drop_icm_addr;
-				attr.hit_gvmi = nic_dmn->drop_icm_addr >> 48;
+			attr.hit_gvmi = action->vport->caps->vhca_gvmi;
+			dest_action = action;
+			if (rx_rule) {
+				if (action->vport->caps->num == WIRE_PORT) {
+					mlx5dr_dbg(dmn, "Device doesn't support Loopback on WIRE vport\n");
+					return -EOPNOTSUPP;
+				}
+				attr.final_icm_addr = action->vport->caps->icm_address_rx;
 			} else {
-				attr.hit_gvmi = action->vport->caps->vhca_gvmi;
-				dest_action = action;
-				attr.final_icm_addr = rx_rule ?
-						      action->vport->caps->icm_address_rx :
-						      action->vport->caps->icm_address_tx;
+				attr.final_icm_addr = action->vport->caps->icm_address_tx;
 			}
 			break;
 		case DR_ACTION_TYP_POP_VLAN:
@@ -847,8 +846,7 @@ struct mlx5dr_action *
 mlx5dr_action_create_mult_dest_tbl(struct mlx5dr_domain *dmn,
 				   struct mlx5dr_action_dest *dests,
 				   u32 num_of_dests,
-				   bool ignore_flow_level,
-				   u32 flow_source)
+				   bool ignore_flow_level)
 {
 	struct mlx5dr_cmd_flow_destination_hw_info *hw_dests;
 	struct mlx5dr_action **ref_actions;
@@ -916,8 +914,7 @@ mlx5dr_action_create_mult_dest_tbl(struct mlx5dr_domain *dmn,
 				      reformat_req,
 				      &action->dest_tbl->fw_tbl.id,
 				      &action->dest_tbl->fw_tbl.group_id,
-				      ignore_flow_level,
-				      flow_source);
+				      ignore_flow_level);
 	if (ret)
 		goto free_action;
 

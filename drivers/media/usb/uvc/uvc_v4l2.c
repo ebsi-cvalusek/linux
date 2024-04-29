@@ -40,15 +40,7 @@ static int uvc_ioctl_ctrl_map(struct uvc_video_chain *chain,
 		return -ENOMEM;
 
 	map->id = xmap->id;
-	/* Non standard control id. */
-	if (v4l2_ctrl_get_name(map->id) == NULL) {
-		map->name = kmemdup(xmap->name, sizeof(xmap->name),
-				    GFP_KERNEL);
-		if (!map->name) {
-			ret = -ENOMEM;
-			goto free_map;
-		}
-	}
+	memcpy(map->name, xmap->name, sizeof(map->name));
 	memcpy(map->entity, xmap->entity, sizeof(map->entity));
 	map->selector = xmap->selector;
 	map->size = xmap->size;
@@ -480,13 +472,10 @@ static int uvc_v4l2_set_streamparm(struct uvc_streaming *stream,
 	uvc_simplify_fraction(&timeperframe.numerator,
 		&timeperframe.denominator, 8, 333);
 
-	if (parm->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+	if (parm->type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		parm->parm.capture.timeperframe = timeperframe;
-		parm->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
-	} else {
+	else
 		parm->parm.output.timeperframe = timeperframe;
-		parm->parm.output.capability = V4L2_CAP_TIMEPERFRAME;
-	}
 
 	return 0;
 }
@@ -657,6 +646,8 @@ static int uvc_ioctl_enum_fmt(struct uvc_streaming *stream,
 	fmt->flags = 0;
 	if (format->flags & UVC_FMT_FLAG_COMPRESSED)
 		fmt->flags |= V4L2_FMT_FLAG_COMPRESSED;
+	strscpy(fmt->description, format->name, sizeof(fmt->description));
+	fmt->description[sizeof(fmt->description) - 1] = 0;
 	fmt->pixelformat = format->fcc;
 	return 0;
 }
@@ -870,31 +861,29 @@ static int uvc_ioctl_enum_input(struct file *file, void *fh,
 	struct uvc_video_chain *chain = handle->chain;
 	const struct uvc_entity *selector = chain->selector;
 	struct uvc_entity *iterm = NULL;
-	struct uvc_entity *it;
 	u32 index = input->index;
+	int pin = 0;
 
 	if (selector == NULL ||
 	    (chain->dev->quirks & UVC_QUIRK_IGNORE_SELECTOR_UNIT)) {
 		if (index != 0)
 			return -EINVAL;
-		list_for_each_entry(it, &chain->entities, chain) {
-			if (UVC_ENTITY_IS_ITERM(it)) {
-				iterm = it;
+		list_for_each_entry(iterm, &chain->entities, chain) {
+			if (UVC_ENTITY_IS_ITERM(iterm))
 				break;
-			}
 		}
+		pin = iterm->id;
 	} else if (index < selector->bNrInPins) {
-		list_for_each_entry(it, &chain->entities, chain) {
-			if (!UVC_ENTITY_IS_ITERM(it))
+		pin = selector->baSourceID[index];
+		list_for_each_entry(iterm, &chain->entities, chain) {
+			if (!UVC_ENTITY_IS_ITERM(iterm))
 				continue;
-			if (it->id == selector->baSourceID[index]) {
-				iterm = it;
+			if (iterm->id == pin)
 				break;
-			}
 		}
 	}
 
-	if (iterm == NULL)
+	if (iterm == NULL || iterm->id != pin)
 		return -EINVAL;
 
 	memset(input, 0, sizeof(*input));
@@ -1006,23 +995,58 @@ static int uvc_ioctl_query_ext_ctrl(struct file *file, void *fh,
 	return 0;
 }
 
-static int uvc_ctrl_check_access(struct uvc_video_chain *chain,
-				 struct v4l2_ext_controls *ctrls,
-				 unsigned long ioctl)
+static int uvc_ioctl_g_ctrl(struct file *file, void *fh,
+			    struct v4l2_control *ctrl)
 {
-	struct v4l2_ext_control *ctrl = ctrls->controls;
-	unsigned int i;
-	int ret = 0;
+	struct uvc_fh *handle = fh;
+	struct uvc_video_chain *chain = handle->chain;
+	struct v4l2_ext_control xctrl;
+	int ret;
 
-	for (i = 0; i < ctrls->count; ++ctrl, ++i) {
-		ret = uvc_ctrl_is_accessible(chain, ctrl->id, ctrls, ioctl);
-		if (ret)
-			break;
+	memset(&xctrl, 0, sizeof(xctrl));
+	xctrl.id = ctrl->id;
+
+	ret = uvc_ctrl_begin(chain);
+	if (ret < 0)
+		return ret;
+
+	ret = uvc_ctrl_get(chain, &xctrl);
+	uvc_ctrl_rollback(handle);
+	if (ret < 0)
+		return ret;
+
+	ctrl->value = xctrl.value;
+	return 0;
+}
+
+static int uvc_ioctl_s_ctrl(struct file *file, void *fh,
+			    struct v4l2_control *ctrl)
+{
+	struct uvc_fh *handle = fh;
+	struct uvc_video_chain *chain = handle->chain;
+	struct v4l2_ext_control xctrl;
+	int ret;
+
+	memset(&xctrl, 0, sizeof(xctrl));
+	xctrl.id = ctrl->id;
+	xctrl.value = ctrl->value;
+
+	ret = uvc_ctrl_begin(chain);
+	if (ret < 0)
+		return ret;
+
+	ret = uvc_ctrl_set(handle, &xctrl);
+	if (ret < 0) {
+		uvc_ctrl_rollback(handle);
+		return ret;
 	}
 
-	ctrls->error_idx = ioctl == VIDIOC_TRY_EXT_CTRLS ? i : ctrls->count;
+	ret = uvc_ctrl_commit(handle, &xctrl, 1);
+	if (ret < 0)
+		return ret;
 
-	return ret;
+	ctrl->value = xctrl.value;
+	return 0;
 }
 
 static int uvc_ioctl_g_ext_ctrls(struct file *file, void *fh,
@@ -1033,10 +1057,6 @@ static int uvc_ioctl_g_ext_ctrls(struct file *file, void *fh,
 	struct v4l2_ext_control *ctrl = ctrls->controls;
 	unsigned int i;
 	int ret;
-
-	ret = uvc_ctrl_check_access(chain, ctrls, VIDIOC_G_EXT_CTRLS);
-	if (ret < 0)
-		return ret;
 
 	if (ctrls->which == V4L2_CTRL_WHICH_DEF_VAL) {
 		for (i = 0; i < ctrls->count; ++ctrl, ++i) {
@@ -1074,16 +1094,16 @@ static int uvc_ioctl_g_ext_ctrls(struct file *file, void *fh,
 
 static int uvc_ioctl_s_try_ext_ctrls(struct uvc_fh *handle,
 				     struct v4l2_ext_controls *ctrls,
-				     unsigned long ioctl)
+				     bool commit)
 {
 	struct v4l2_ext_control *ctrl = ctrls->controls;
 	struct uvc_video_chain *chain = handle->chain;
 	unsigned int i;
 	int ret;
 
-	ret = uvc_ctrl_check_access(chain, ctrls, ioctl);
-	if (ret < 0)
-		return ret;
+	/* Default value cannot be changed */
+	if (ctrls->which == V4L2_CTRL_WHICH_DEF_VAL)
+		return -EINVAL;
 
 	ret = uvc_ctrl_begin(chain);
 	if (ret < 0)
@@ -1093,15 +1113,14 @@ static int uvc_ioctl_s_try_ext_ctrls(struct uvc_fh *handle,
 		ret = uvc_ctrl_set(handle, ctrl);
 		if (ret < 0) {
 			uvc_ctrl_rollback(handle);
-			ctrls->error_idx = ioctl == VIDIOC_S_EXT_CTRLS ?
-						    ctrls->count : i;
+			ctrls->error_idx = commit ? ctrls->count : i;
 			return ret;
 		}
 	}
 
 	ctrls->error_idx = 0;
 
-	if (ioctl == VIDIOC_S_EXT_CTRLS)
+	if (commit)
 		return uvc_ctrl_commit(handle, ctrls->controls, ctrls->count);
 	else
 		return uvc_ctrl_rollback(handle);
@@ -1112,7 +1131,7 @@ static int uvc_ioctl_s_ext_ctrls(struct file *file, void *fh,
 {
 	struct uvc_fh *handle = fh;
 
-	return uvc_ioctl_s_try_ext_ctrls(handle, ctrls, VIDIOC_S_EXT_CTRLS);
+	return uvc_ioctl_s_try_ext_ctrls(handle, ctrls, true);
 }
 
 static int uvc_ioctl_try_ext_ctrls(struct file *file, void *fh,
@@ -1120,7 +1139,7 @@ static int uvc_ioctl_try_ext_ctrls(struct file *file, void *fh,
 {
 	struct uvc_fh *handle = fh;
 
-	return uvc_ioctl_s_try_ext_ctrls(handle, ctrls, VIDIOC_TRY_EXT_CTRLS);
+	return uvc_ioctl_s_try_ext_ctrls(handle, ctrls, false);
 }
 
 static int uvc_ioctl_querymenu(struct file *file, void *fh,
@@ -1519,6 +1538,8 @@ const struct v4l2_ioctl_ops uvc_ioctl_ops = {
 	.vidioc_s_input = uvc_ioctl_s_input,
 	.vidioc_queryctrl = uvc_ioctl_queryctrl,
 	.vidioc_query_ext_ctrl = uvc_ioctl_query_ext_ctrl,
+	.vidioc_g_ctrl = uvc_ioctl_g_ctrl,
+	.vidioc_s_ctrl = uvc_ioctl_s_ctrl,
 	.vidioc_g_ext_ctrls = uvc_ioctl_g_ext_ctrls,
 	.vidioc_s_ext_ctrls = uvc_ioctl_s_ext_ctrls,
 	.vidioc_try_ext_ctrls = uvc_ioctl_try_ext_ctrls,

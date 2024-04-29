@@ -1196,17 +1196,14 @@ static int encode_supported_features(void **p, void *end)
 	if (count > 0) {
 		size_t i;
 		size_t size = FEATURE_BYTES(count);
-		unsigned long bit;
 
 		if (WARN_ON_ONCE(*p + 4 + size > end))
 			return -ERANGE;
 
 		ceph_encode_32(p, size);
 		memset(*p, 0, size);
-		for (i = 0; i < count; i++) {
-			bit = feature_bits[i];
-			((unsigned char *)(*p))[bit / 8] |= BIT(bit % 8);
-		}
+		for (i = 0; i < count; i++)
+			((unsigned char*)(*p))[i / 8] |= BIT(feature_bits[i] % 8);
 		*p += size;
 	} else {
 		if (WARN_ON_ONCE(*p + 4 > end))
@@ -3543,12 +3540,6 @@ static void handle_session(struct ceph_mds_session *session,
 		break;
 
 	case CEPH_SESSION_FLUSHMSG:
-		/* flush cap releases */
-		spin_lock(&session->s_cap_lock);
-		if (session->s_num_cap_releases)
-			ceph_flush_cap_releases(mdsc, session);
-		spin_unlock(&session->s_cap_lock);
-
 		send_flushmsg_ack(mdsc, session, seq);
 		break;
 
@@ -3781,7 +3772,7 @@ static int reconnect_caps_cb(struct inode *inode, struct ceph_cap *cap,
 	struct ceph_pagelist *pagelist = recon_state->pagelist;
 	struct dentry *dentry;
 	char *path;
-	int pathlen = 0, err;
+	int pathlen, err;
 	u64 pathbase;
 	u64 snap_follows;
 
@@ -3801,6 +3792,7 @@ static int reconnect_caps_cb(struct inode *inode, struct ceph_cap *cap,
 		}
 	} else {
 		path = NULL;
+		pathlen = 0;
 		pathbase = 0;
 	}
 
@@ -4607,7 +4599,7 @@ static void delayed_work(struct work_struct *work)
 
 	dout("mdsc delayed_work\n");
 
-	if (mdsc->stopping >= CEPH_MDSC_STOPPING_FLUSHED)
+	if (mdsc->stopping)
 		return;
 
 	mutex_lock(&mdsc->mutex);
@@ -4786,7 +4778,7 @@ void send_flush_mdlog(struct ceph_mds_session *s)
 void ceph_mdsc_pre_umount(struct ceph_mds_client *mdsc)
 {
 	dout("pre_umount\n");
-	mdsc->stopping = CEPH_MDSC_STOPPING_BEGIN;
+	mdsc->stopping = 1;
 
 	ceph_mdsc_iterate_sessions(mdsc, send_flush_mdlog, true);
 	ceph_mdsc_iterate_sessions(mdsc, lock_unlock_session, false);
@@ -4803,17 +4795,15 @@ void ceph_mdsc_pre_umount(struct ceph_mds_client *mdsc)
 }
 
 /*
- * flush the mdlog and wait for all write mds requests to flush.
+ * wait for all write mds requests to flush.
  */
-static void flush_mdlog_and_wait_mdsc_unsafe_requests(struct ceph_mds_client *mdsc,
-						 u64 want_tid)
+static void wait_unsafe_requests(struct ceph_mds_client *mdsc, u64 want_tid)
 {
 	struct ceph_mds_request *req = NULL, *nextreq;
-	struct ceph_mds_session *last_session = NULL;
 	struct rb_node *n;
 
 	mutex_lock(&mdsc->mutex);
-	dout("%s want %lld\n", __func__, want_tid);
+	dout("wait_unsafe_requests want %lld\n", want_tid);
 restart:
 	req = __get_oldest_req(mdsc);
 	while (req && req->r_tid <= want_tid) {
@@ -4825,32 +4815,14 @@ restart:
 			nextreq = NULL;
 		if (req->r_op != CEPH_MDS_OP_SETFILELOCK &&
 		    (req->r_op & CEPH_MDS_OP_WRITE)) {
-			struct ceph_mds_session *s = req->r_session;
-
-			if (!s) {
-				req = nextreq;
-				continue;
-			}
-
 			/* write op */
 			ceph_mdsc_get_request(req);
 			if (nextreq)
 				ceph_mdsc_get_request(nextreq);
-			s = ceph_get_mds_session(s);
 			mutex_unlock(&mdsc->mutex);
-
-			/* send flush mdlog request to MDS */
-			if (last_session != s) {
-				send_flush_mdlog(s);
-				ceph_put_mds_session(last_session);
-				last_session = s;
-			} else {
-				ceph_put_mds_session(s);
-			}
-			dout("%s wait on %llu (want %llu)\n", __func__,
+			dout("wait_unsafe_requests  wait on %llu (want %llu)\n",
 			     req->r_tid, want_tid);
 			wait_for_completion(&req->r_safe_completion);
-
 			mutex_lock(&mdsc->mutex);
 			ceph_mdsc_put_request(req);
 			if (!nextreq)
@@ -4865,8 +4837,7 @@ restart:
 		req = nextreq;
 	}
 	mutex_unlock(&mdsc->mutex);
-	ceph_put_mds_session(last_session);
-	dout("%s done\n", __func__);
+	dout("wait_unsafe_requests done\n");
 }
 
 void ceph_mdsc_sync(struct ceph_mds_client *mdsc)
@@ -4895,7 +4866,7 @@ void ceph_mdsc_sync(struct ceph_mds_client *mdsc)
 	dout("sync want tid %lld flush_seq %lld\n",
 	     want_tid, want_flush);
 
-	flush_mdlog_and_wait_mdsc_unsafe_requests(mdsc, want_tid);
+	wait_unsafe_requests(mdsc, want_tid);
 	wait_caps_flush(mdsc, want_flush);
 }
 

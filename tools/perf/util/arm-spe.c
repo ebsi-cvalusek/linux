@@ -51,7 +51,6 @@ struct arm_spe {
 	u8				timeless_decoding;
 	u8				data_queued;
 
-	u64				sample_type;
 	u8				sample_flc;
 	u8				sample_llc;
 	u8				sample_tlb;
@@ -249,12 +248,6 @@ static void arm_spe_prep_sample(struct arm_spe *spe,
 	event->sample.header.size = sizeof(struct perf_event_header);
 }
 
-static int arm_spe__inject_event(union perf_event *event, struct perf_sample *sample, u64 type)
-{
-	event->header.size = perf_event__sample_event_size(sample, type, 0);
-	return perf_event__synthesize_sample(event, type, 0, sample);
-}
-
 static inline int
 arm_spe_deliver_synth_event(struct arm_spe *spe,
 			    struct arm_spe_queue *speq __maybe_unused,
@@ -262,12 +255,6 @@ arm_spe_deliver_synth_event(struct arm_spe *spe,
 			    struct perf_sample *sample)
 {
 	int ret;
-
-	if (spe->synth_opts.inject) {
-		ret = arm_spe__inject_event(event, sample, spe->sample_type);
-		if (ret)
-			return ret;
-	}
 
 	ret = perf_session__deliver_synth_event(spe->session, event, sample);
 	if (ret)
@@ -312,16 +299,26 @@ static int arm_spe__synth_branch_sample(struct arm_spe_queue *speq,
 	return arm_spe_deliver_synth_event(spe, speq, event, &sample);
 }
 
+#define SPE_MEM_TYPE	(ARM_SPE_L1D_ACCESS | ARM_SPE_L1D_MISS | \
+			 ARM_SPE_LLC_ACCESS | ARM_SPE_LLC_MISS | \
+			 ARM_SPE_REMOTE_ACCESS)
+
+static bool arm_spe__is_memory_event(enum arm_spe_sample_type type)
+{
+	if (type & SPE_MEM_TYPE)
+		return true;
+
+	return false;
+}
+
 static u64 arm_spe__synth_data_source(const struct arm_spe_record *record)
 {
 	union perf_mem_data_src	data_src = { 0 };
 
 	if (record->op == ARM_SPE_LD)
 		data_src.mem_op = PERF_MEM_OP_LOAD;
-	else if (record->op == ARM_SPE_ST)
-		data_src.mem_op = PERF_MEM_OP_STORE;
 	else
-		return 0;
+		data_src.mem_op = PERF_MEM_OP_STORE;
 
 	if (record->type & (ARM_SPE_LLC_ACCESS | ARM_SPE_LLC_MISS)) {
 		data_src.mem_lvl = PERF_MEM_LVL_L3;
@@ -425,11 +422,7 @@ static int arm_spe_sample(struct arm_spe_queue *speq)
 			return err;
 	}
 
-	/*
-	 * When data_src is zero it means the record is not a memory operation,
-	 * skip to synthesize memory sample for this case.
-	 */
-	if (spe->sample_memory && data_src) {
+	if (spe->sample_memory && arm_spe__is_memory_event(record->type)) {
 		err = arm_spe__synth_mem_sample(speq, spe->memory_id, data_src);
 		if (err)
 			return err;
@@ -921,14 +914,11 @@ arm_spe_synth_events(struct arm_spe *spe, struct perf_session *session)
 	attr.type = PERF_TYPE_HARDWARE;
 	attr.sample_type = evsel->core.attr.sample_type & PERF_SAMPLE_MASK;
 	attr.sample_type |= PERF_SAMPLE_IP | PERF_SAMPLE_TID |
-			    PERF_SAMPLE_PERIOD | PERF_SAMPLE_DATA_SRC |
-			    PERF_SAMPLE_ADDR;
+			    PERF_SAMPLE_PERIOD | PERF_SAMPLE_DATA_SRC;
 	if (spe->timeless_decoding)
 		attr.sample_type &= ~(u64)PERF_SAMPLE_TIME;
 	else
 		attr.sample_type |= PERF_SAMPLE_TIME;
-
-	spe->sample_type = attr.sample_type;
 
 	attr.exclude_user = evsel->core.attr.exclude_user;
 	attr.exclude_kernel = evsel->core.attr.exclude_kernel;

@@ -139,7 +139,7 @@ static inline int kprobe_ftrace(struct kprobe *p)
  *
  */
 struct kretprobe_holder {
-	struct kretprobe __rcu *rp;
+	struct kretprobe	*rp;
 	refcount_t		ref;
 };
 
@@ -153,8 +153,6 @@ struct kretprobe {
 	struct freelist_head freelist;
 	struct kretprobe_holder *rph;
 };
-
-#define KRETPROBE_MAX_DATA_SIZE	4096
 
 struct kretprobe_instance {
 	union {
@@ -224,7 +222,10 @@ unsigned long kretprobe_trampoline_handler(struct pt_regs *regs,
 
 static nokprobe_inline struct kretprobe *get_kretprobe(struct kretprobe_instance *ri)
 {
-	return rcu_dereference_check(ri->rph->rp, rcu_read_lock_any_held());
+	RCU_LOCKDEP_WARN(!rcu_read_lock_any_held(),
+		"Kretprobe is accessed from instance under preemptive context");
+
+	return READ_ONCE(ri->rph->rp);
 }
 
 #else /* CONFIG_KRETPROBES */
@@ -346,8 +347,6 @@ extern int proc_kprobes_optimization_handler(struct ctl_table *table,
 					     size_t *length, loff_t *ppos);
 #endif
 extern void wait_for_kprobe_optimizer(void);
-bool optprobe_queued_unopt(struct optimized_kprobe *op);
-bool kprobe_disarmed(struct kprobe *p);
 #else
 static inline void wait_for_kprobe_optimizer(void) { }
 #endif /* CONFIG_OPTPROBES */

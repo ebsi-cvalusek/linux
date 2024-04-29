@@ -9,7 +9,7 @@
  * Copyright 2007, Michael Wu <flamingice@sourmilk.net>
  * Copyright 2007-2010, Intel Corporation
  * Copyright(c) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2021 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  */
 
 /**
@@ -191,8 +191,7 @@ static void ieee80211_add_addbaext(struct ieee80211_sub_if_data *sdata,
 	sband = ieee80211_get_sband(sdata);
 	if (!sband)
 		return;
-	he_cap = ieee80211_get_he_iftype_cap(sband,
-					     ieee80211_vif_type_p2p(&sdata->vif));
+	he_cap = ieee80211_get_he_iftype_cap(sband, sdata->vif.type);
 	if (!he_cap)
 		return;
 
@@ -310,7 +309,7 @@ void ___ieee80211_start_rx_ba_session(struct sta_info *sta,
 	}
 
 	if (sta->sta.he_cap.has_he)
-		max_buf_size = IEEE80211_MAX_AMPDU_BUF_HE;
+		max_buf_size = IEEE80211_MAX_AMPDU_BUF;
 	else
 		max_buf_size = IEEE80211_MAX_AMPDU_BUF_HT;
 
@@ -478,7 +477,7 @@ void ieee80211_process_addba_request(struct ieee80211_local *local,
 				     size_t len)
 {
 	u16 capab, tid, timeout, ba_policy, buf_size, start_seq_num;
-	struct ieee802_11_elems *elems = NULL;
+	struct ieee802_11_elems elems = { };
 	u8 dialog_token;
 	int ies_len;
 
@@ -496,18 +495,16 @@ void ieee80211_process_addba_request(struct ieee80211_local *local,
 	ies_len = len - offsetof(struct ieee80211_mgmt,
 				 u.action.u.addba_req.variable);
 	if (ies_len) {
-		elems = ieee802_11_parse_elems(mgmt->u.action.u.addba_req.variable,
-					       ies_len, true, mgmt->bssid, NULL);
-		if (!elems || elems->parse_error)
-			goto free;
+		ieee802_11_parse_elems(mgmt->u.action.u.addba_req.variable,
+                                ies_len, true, &elems, mgmt->bssid, NULL);
+		if (elems.parse_error)
+			return;
 	}
 
 	__ieee80211_start_rx_ba_session(sta, dialog_token, timeout,
 					start_seq_num, ba_policy, tid,
 					buf_size, true, false,
-					elems ? elems->addba_ext_ie : NULL);
-free:
-	kfree(elems);
+					elems.addba_ext_ie);
 }
 
 void ieee80211_manage_rx_ba_offl(struct ieee80211_vif *vif,

@@ -1520,8 +1520,6 @@ struct intel_psr {
 	bool psr2_sel_fetch_enabled;
 	bool req_psr2_sdp_prior_scanline;
 	u8 sink_sync_latency;
-	u8 io_wake_lines;
-	u8 fast_wake_lines;
 	ktime_t last_entry_attempt;
 	ktime_t last_exit;
 	bool sink_not_reliable;
@@ -1641,9 +1639,6 @@ struct intel_dp {
 	struct intel_dp_pcon_frl frl;
 
 	struct intel_psr psr;
-
-	/* When we last wrote the OUI for eDP */
-	unsigned long last_oui_write;
 };
 
 enum lspcon_vendor {

@@ -31,7 +31,7 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 
 	bust_spinlocks(0);
 	die(regs, "Oops");
-	make_task_dead(SIGKILL);
+	do_exit(SIGKILL);
 }
 
 static inline void no_context(struct pt_regs *regs, unsigned long addr)
@@ -188,8 +188,7 @@ static inline bool access_error(unsigned long cause, struct vm_area_struct *vma)
 		}
 		break;
 	case EXC_LOAD_PAGE_FAULT:
-		/* Write implies read */
-		if (!(vma->vm_flags & (VM_READ | VM_WRITE))) {
+		if (!(vma->vm_flags & VM_READ)) {
 			return true;
 		}
 		break;
@@ -271,12 +270,10 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 
-	if (!user_mode(regs) && addr < TASK_SIZE && unlikely(!(regs->status & SR_SUM))) {
-		if (fixup_exception(regs))
-			return;
-
-		die_kernel_fault("access to user memory without uaccess routines", addr, regs);
-	}
+	if (!user_mode(regs) && addr < TASK_SIZE &&
+			unlikely(!(regs->status & SR_SUM)))
+		die_kernel_fault("access to user memory without uaccess routines",
+				addr, regs);
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
 

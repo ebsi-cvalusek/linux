@@ -1266,7 +1266,7 @@ static void srp_finish_req(struct srp_rdma_ch *ch, struct srp_request *req,
 	if (scmnd) {
 		srp_free_req(ch, req, scmnd, 0);
 		scmnd->result = result;
-		scsi_done(scmnd);
+		scmnd->scsi_done(scmnd);
 	}
 }
 
@@ -1955,8 +1955,7 @@ static void srp_process_rsp(struct srp_rdma_ch *ch, struct srp_rsp *rsp)
 		if (scmnd) {
 			req = scsi_cmd_priv(scmnd);
 			scmnd = srp_claim_req(ch, req, NULL, scmnd);
-		}
-		if (!scmnd) {
+		} else {
 			shost_printk(KERN_ERR, target->scsi_host,
 				     "Null scmnd for RSP w/tag %#016llx received on ch %td / QP %#x\n",
 				     rsp->tag, ch - target->ch, ch->qp->qp_num);
@@ -1978,13 +1977,17 @@ static void srp_process_rsp(struct srp_rdma_ch *ch, struct srp_rsp *rsp)
 
 		if (unlikely(rsp->flags & SRP_RSP_FLAG_DIUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_in_res_cnt));
+		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DIOVER))
+			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_in_res_cnt));
 		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_out_res_cnt));
+		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOOVER))
+			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_out_res_cnt));
 
 		srp_free_req(ch, req, scmnd,
 			     be32_to_cpu(rsp->req_lim_delta));
 
-		scsi_done(scmnd);
+		scmnd->scsi_done(scmnd);
 	}
 }
 
@@ -2236,7 +2239,7 @@ err_iu:
 
 err:
 	if (scmnd->result) {
-		scsi_done(scmnd);
+		scmnd->scsi_done(scmnd);
 		ret = 0;
 	} else {
 		ret = SCSI_MLQUEUE_HOST_BUSY;
@@ -2779,13 +2782,16 @@ static int srp_send_tsk_mgmt(struct srp_rdma_ch *ch, u64 req_tag, u64 lun,
 static int srp_abort(struct scsi_cmnd *scmnd)
 {
 	struct srp_target_port *target = host_to_target(scmnd->device->host);
-	struct srp_request *req = scsi_cmd_priv(scmnd);
+	struct srp_request *req = (struct srp_request *) scmnd->host_scribble;
 	u32 tag;
 	u16 ch_idx;
 	struct srp_rdma_ch *ch;
+	int ret;
 
 	shost_printk(KERN_ERR, target->scsi_host, "SRP abort called\n");
 
+	if (!req)
+		return SUCCESS;
 	tag = blk_mq_unique_tag(scsi_cmd_to_rq(scmnd));
 	ch_idx = blk_mq_unique_tag_to_hwq(tag);
 	if (WARN_ON_ONCE(ch_idx >= target->ch_count))
@@ -2796,14 +2802,19 @@ static int srp_abort(struct scsi_cmnd *scmnd)
 	shost_printk(KERN_ERR, target->scsi_host,
 		     "Sending SRP abort for tag %#x\n", tag);
 	if (srp_send_tsk_mgmt(ch, tag, scmnd->device->lun,
-			      SRP_TSK_ABORT_TASK, NULL) == 0) {
+			      SRP_TSK_ABORT_TASK, NULL) == 0)
+		ret = SUCCESS;
+	else if (target->rport->state == SRP_RPORT_LOST)
+		ret = FAST_IO_FAIL;
+	else
+		ret = FAILED;
+	if (ret == SUCCESS) {
 		srp_free_req(ch, req, scmnd, 0);
-		return SUCCESS;
+		scmnd->result = DID_ABORT << 16;
+		scmnd->scsi_done(scmnd);
 	}
-	if (target->rport->state == SRP_RPORT_LOST)
-		return FAST_IO_FAIL;
 
-	return FAILED;
+	return ret;
 }
 
 static int srp_reset_device(struct scsi_cmnd *scmnd)
@@ -3387,8 +3398,7 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_PKEY:
-			ret = match_hex(args, &token);
-			if (ret) {
+			if (match_hex(args, &token)) {
 				pr_warn("bad P_Key parameter '%s'\n", p);
 				goto out;
 			}
@@ -3448,8 +3458,7 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_MAX_SECT:
-			ret = match_int(args, &token);
-			if (ret) {
+			if (match_int(args, &token)) {
 				pr_warn("bad max sect parameter '%s'\n", p);
 				goto out;
 			}
@@ -3457,15 +3466,8 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_QUEUE_SIZE:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for queue_size parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1) {
+			if (match_int(args, &token) || token < 1) {
 				pr_warn("bad queue_size parameter '%s'\n", p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->scsi_host->can_queue = token;
@@ -3476,40 +3478,25 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_MAX_CMD_PER_LUN:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for max cmd_per_lun parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1) {
+			if (match_int(args, &token) || token < 1) {
 				pr_warn("bad max cmd_per_lun parameter '%s'\n",
 					p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->scsi_host->cmd_per_lun = token;
 			break;
 
 		case SRP_OPT_TARGET_CAN_QUEUE:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for max target_can_queue parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1) {
+			if (match_int(args, &token) || token < 1) {
 				pr_warn("bad max target_can_queue parameter '%s'\n",
 					p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->target_can_queue = token;
 			break;
 
 		case SRP_OPT_IO_CLASS:
-			ret = match_hex(args, &token);
-			if (ret) {
+			if (match_hex(args, &token)) {
 				pr_warn("bad IO class parameter '%s'\n", p);
 				goto out;
 			}
@@ -3518,7 +3505,6 @@ static int srp_parse_options(struct net *net, const char *buf,
 				pr_warn("unknown IO class parameter value %x specified (use %x or %x).\n",
 					token, SRP_REV10_IB_IO_CLASS,
 					SRP_REV16A_IB_IO_CLASS);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->io_class = token;
@@ -3541,24 +3527,16 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_CMD_SG_ENTRIES:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for max cmd_sg_entries parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1 || token > 255) {
+			if (match_int(args, &token) || token < 1 || token > 255) {
 				pr_warn("bad max cmd_sg_entries parameter '%s'\n",
 					p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->cmd_sg_cnt = token;
 			break;
 
 		case SRP_OPT_ALLOW_EXT_SG:
-			ret = match_int(args, &token);
-			if (ret) {
+			if (match_int(args, &token)) {
 				pr_warn("bad allow_ext_sg parameter '%s'\n", p);
 				goto out;
 			}
@@ -3566,77 +3544,43 @@ static int srp_parse_options(struct net *net, const char *buf,
 			break;
 
 		case SRP_OPT_SG_TABLESIZE:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for max sg_tablesize parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1 || token > SG_MAX_SEGMENTS) {
+			if (match_int(args, &token) || token < 1 ||
+					token > SG_MAX_SEGMENTS) {
 				pr_warn("bad max sg_tablesize parameter '%s'\n",
 					p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->sg_tablesize = token;
 			break;
 
 		case SRP_OPT_COMP_VECTOR:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for comp_vector parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 0) {
+			if (match_int(args, &token) || token < 0) {
 				pr_warn("bad comp_vector parameter '%s'\n", p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->comp_vector = token;
 			break;
 
 		case SRP_OPT_TL_RETRY_COUNT:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for tl_retry_count parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 2 || token > 7) {
+			if (match_int(args, &token) || token < 2 || token > 7) {
 				pr_warn("bad tl_retry_count parameter '%s' (must be a number between 2 and 7)\n",
 					p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->tl_retry_count = token;
 			break;
 
 		case SRP_OPT_MAX_IT_IU_SIZE:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for max it_iu_size parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 0) {
+			if (match_int(args, &token) || token < 0) {
 				pr_warn("bad maximum initiator to target IU size '%s'\n", p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->max_it_iu_size = token;
 			break;
 
 		case SRP_OPT_CH_COUNT:
-			ret = match_int(args, &token);
-			if (ret) {
-				pr_warn("match_int() failed for channel count parameter '%s', Error %d\n",
-					p, ret);
-				goto out;
-			}
-			if (token < 1) {
+			if (match_int(args, &token) || token < 1) {
 				pr_warn("bad channel count %s\n", p);
-				ret = -EINVAL;
 				goto out;
 			}
 			target->ch_count = token;
@@ -3645,7 +3589,6 @@ static int srp_parse_options(struct net *net, const char *buf,
 		default:
 			pr_warn("unknown parameter or missing value '%s' in target creation request\n",
 				p);
-			ret = -EINVAL;
 			goto out;
 		}
 	}
@@ -4095,11 +4038,9 @@ static void srp_remove_one(struct ib_device *device, void *client_data)
 		spin_unlock(&host->target_lock);
 
 		/*
-		 * srp_queue_remove_work() queues a call to
-		 * srp_remove_target(). The latter function cancels
-		 * target->tl_err_work so waiting for the remove works to
-		 * finish is sufficient.
+		 * Wait for tl_err and target port removal tasks.
 		 */
+		flush_workqueue(system_long_wq);
 		flush_workqueue(srp_remove_wq);
 
 		kfree(host);

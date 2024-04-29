@@ -1097,7 +1097,7 @@ int g_audio_setup(struct g_audio *g_audio, const char *pcm_name,
 			}
 
 			kctl->id.device = pcm->device;
-			kctl->id.subdevice = 0;
+			kctl->id.subdevice = i;
 
 			err = snd_ctl_add(card, kctl);
 			if (err < 0)
@@ -1120,7 +1120,7 @@ int g_audio_setup(struct g_audio *g_audio, const char *pcm_name,
 			}
 
 			kctl->id.device = pcm->device;
-			kctl->id.subdevice = 0;
+			kctl->id.subdevice = i;
 
 
 			kctl->tlv.c = u_audio_volume_tlv;
@@ -1174,7 +1174,7 @@ void g_audio_cleanup(struct g_audio *g_audio)
 	uac = g_audio->uac;
 	card = uac->card;
 	if (card)
-		snd_card_free_when_closed(card);
+		snd_card_free(card);
 
 	kfree(uac->p_prm.reqs);
 	kfree(uac->c_prm.reqs);

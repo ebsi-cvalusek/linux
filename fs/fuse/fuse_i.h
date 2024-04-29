@@ -63,19 +63,6 @@ struct fuse_forget_link {
 	struct fuse_forget_link *next;
 };
 
-/* Submount lookup tracking */
-struct fuse_submount_lookup {
-	/** Refcount */
-	refcount_t count;
-
-	/** Unique ID, which identifies the inode between userspace
-	 * and kernel */
-	u64 nodeid;
-
-	/** The request used for sending the FORGET message */
-	struct fuse_forget_link *forget;
-};
-
 /** FUSE inode */
 struct fuse_inode {
 	/** Inode data */
@@ -168,8 +155,6 @@ struct fuse_inode {
 	 */
 	struct fuse_inode_dax *dax;
 #endif
-	/** Submount specific lookup tracking */
-	struct fuse_submount_lookup *submount_lookup;
 };
 
 /** FUSE inode state bits */
@@ -271,7 +256,6 @@ struct fuse_args {
 	bool nocreds:1;
 	bool in_pages:1;
 	bool out_pages:1;
-	bool user_pages:1;
 	bool out_argvar:1;
 	bool page_zeroing:1;
 	bool page_replace:1;
@@ -1164,7 +1148,6 @@ int fuse_allow_current_process(struct fuse_conn *fc);
 
 u64 fuse_lock_owner_id(struct fuse_conn *fc, fl_owner_t id);
 
-void fuse_flush_time_update(struct inode *inode);
 void fuse_update_ctime(struct inode *inode);
 
 int fuse_update_attributes(struct inode *inode, struct file *file);

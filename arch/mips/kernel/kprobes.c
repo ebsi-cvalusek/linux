@@ -11,8 +11,6 @@
  *   Copyright (C) IBM Corporation, 2002, 2004
  */
 
-#define pr_fmt(fmt) "kprobes: " fmt
-
 #include <linux/kprobes.h>
 #include <linux/preempt.h>
 #include <linux/uaccess.h>
@@ -82,7 +80,8 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 	insn = p->addr[0];
 
 	if (insn_has_ll_or_sc(insn)) {
-		pr_notice("Kprobes for ll and sc instructions are not supported\n");
+		pr_notice("Kprobes for ll and sc instructions are not"
+			  "supported\n");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -220,7 +219,7 @@ static int evaluate_branch_instruction(struct kprobe *p, struct pt_regs *regs,
 	return 0;
 
 unaligned:
-	pr_notice("Failed to emulate branch instruction because of unaligned epc - sending SIGBUS to %s.\n", current->comm);
+	pr_notice("%s: unaligned epc - sending SIGBUS.\n", current->comm);
 	force_sig(SIGBUS);
 	return -EFAULT;
 
@@ -239,8 +238,10 @@ static void prepare_singlestep(struct kprobe *p, struct pt_regs *regs,
 		regs->cp0_epc = (unsigned long)p->addr;
 	else if (insn_has_delayslot(p->opcode)) {
 		ret = evaluate_branch_instruction(p, regs, kcb);
-		if (ret < 0)
+		if (ret < 0) {
+			pr_notice("Kprobes: Error in evaluating branch\n");
 			return;
+		}
 	}
 	regs->cp0_epc = (unsigned long)&p->ainsn.insn[0];
 }

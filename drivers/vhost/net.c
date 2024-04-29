@@ -473,7 +473,6 @@ static void vhost_tx_batch(struct vhost_net *net,
 		goto signal_used;
 
 	msghdr->msg_control = &ctl;
-	msghdr->msg_controllen = sizeof(ctl);
 	err = sock->ops->sendmsg(sock, msghdr, 0);
 	if (unlikely(err < 0)) {
 		vq_err(&nvq->vq, "Fail to batch sending packets\n");
@@ -933,18 +932,13 @@ static void handle_tx_zerocopy(struct vhost_net *net, struct socket *sock)
 
 		err = sock->ops->sendmsg(sock, &msg, len);
 		if (unlikely(err < 0)) {
-			bool retry = err == -EAGAIN || err == -ENOMEM || err == -ENOBUFS;
-
 			if (zcopy_used) {
 				if (vq->heads[ubuf->desc].len == VHOST_DMA_IN_PROGRESS)
 					vhost_net_ubuf_put(ubufs);
-				if (retry)
-					nvq->upend_idx = ((unsigned)nvq->upend_idx - 1)
-						% UIO_MAXIOV;
-				else
-					vq->heads[ubuf->desc].len = VHOST_DMA_DONE_LEN;
+				nvq->upend_idx = ((unsigned)nvq->upend_idx - 1)
+					% UIO_MAXIOV;
 			}
-			if (retry) {
+			if (err == -EAGAIN || err == -ENOMEM || err == -ENOBUFS) {
 				vhost_discard_vq_desc(vq, 1);
 				vhost_net_enable_vq(net, vq);
 				break;
@@ -1455,9 +1449,13 @@ err:
 	return ERR_PTR(r);
 }
 
-static struct ptr_ring *get_tap_ptr_ring(struct file *file)
+static struct ptr_ring *get_tap_ptr_ring(int fd)
 {
 	struct ptr_ring *ring;
+	struct file *file = fget(fd);
+
+	if (!file)
+		return NULL;
 	ring = tun_get_tx_ring(file);
 	if (!IS_ERR(ring))
 		goto out;
@@ -1466,6 +1464,7 @@ static struct ptr_ring *get_tap_ptr_ring(struct file *file)
 		goto out;
 	ring = NULL;
 out:
+	fput(file);
 	return ring;
 }
 
@@ -1522,9 +1521,6 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 	nvq = &n->vqs[index];
 	mutex_lock(&vq->mutex);
 
-	if (fd == -1)
-		vhost_clear_msg(&n->dev);
-
 	/* Verify that ring has been setup correctly. */
 	if (!vhost_vq_access_ok(vq)) {
 		r = -EFAULT;
@@ -1555,12 +1551,8 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 		r = vhost_net_enable_vq(n, vq);
 		if (r)
 			goto err_used;
-		if (index == VHOST_NET_VQ_RX) {
-			if (sock)
-				nvq->rx_ring = get_tap_ptr_ring(sock->file);
-			else
-				nvq->rx_ring = NULL;
-		}
+		if (index == VHOST_NET_VQ_RX)
+			nvq->rx_ring = get_tap_ptr_ring(fd);
 
 		oldubufs = nvq->ubufs;
 		nvq->ubufs = ubufs;

@@ -891,7 +891,7 @@ int rtw_check_beacon_data(struct adapter *padapter, u8 *pbuf,  int len)
 		&ie_len,
 		(pbss_network->ie_length - _BEACON_IE_OFFSET_)
 	);
-	if (p) {
+	if (p !=  NULL) {
 		memcpy(supportRate, p + 2, ie_len);
 		supportRateNum = ie_len;
 	}
@@ -903,7 +903,7 @@ int rtw_check_beacon_data(struct adapter *padapter, u8 *pbuf,  int len)
 		&ie_len,
 		pbss_network->ie_length - _BEACON_IE_OFFSET_
 	);
-	if (p) {
+	if (p !=  NULL) {
 		memcpy(supportRate + supportRateNum, p + 2, ie_len);
 		supportRateNum += ie_len;
 	}
@@ -991,7 +991,7 @@ int rtw_check_beacon_data(struct adapter *padapter, u8 *pbuf,  int len)
 			break;
 		}
 
-		if (!p || ie_len == 0)
+		if ((p == NULL) || (ie_len == 0))
 			break;
 	}
 
@@ -1021,7 +1021,7 @@ int rtw_check_beacon_data(struct adapter *padapter, u8 *pbuf,  int len)
 				break;
 			}
 
-			if (!p || ie_len == 0)
+			if ((p == NULL) || (ie_len == 0))
 				break;
 		}
 	}
@@ -1145,7 +1145,7 @@ int rtw_check_beacon_data(struct adapter *padapter, u8 *pbuf,  int len)
 	psta = rtw_get_stainfo(&padapter->stapriv, pbss_network->mac_address);
 	if (!psta) {
 		psta = rtw_alloc_stainfo(&padapter->stapriv, pbss_network->mac_address);
-		if (!psta)
+		if (psta == NULL)
 			return _FAIL;
 	}
 
@@ -1275,7 +1275,7 @@ u8 rtw_ap_set_pairwise_key(struct adapter *padapter, struct sta_info *psta)
 	}
 
 	psetstakey_para = rtw_zmalloc(sizeof(struct set_stakey_parm));
-	if (!psetstakey_para) {
+	if (psetstakey_para == NULL) {
 		kfree(ph2c);
 		res = _FAIL;
 		goto exit;
@@ -1311,12 +1311,12 @@ static int rtw_ap_set_key(
 	int res = _SUCCESS;
 
 	pcmd = rtw_zmalloc(sizeof(struct cmd_obj));
-	if (!pcmd) {
+	if (pcmd == NULL) {
 		res = _FAIL;
 		goto exit;
 	}
 	psetkeyparm = rtw_zmalloc(sizeof(struct setkey_parm));
-	if (!psetkeyparm) {
+	if (psetkeyparm == NULL) {
 		kfree(pcmd);
 		res = _FAIL;
 		goto exit;
@@ -1474,11 +1474,11 @@ static void update_bcn_wps_ie(struct adapter *padapter)
 		&wps_ielen
 	);
 
-	if (!pwps_ie || wps_ielen == 0)
+	if (pwps_ie == NULL || wps_ielen == 0)
 		return;
 
 	pwps_ie_src = pmlmepriv->wps_beacon_ie;
-	if (!pwps_ie_src)
+	if (pwps_ie_src == NULL)
 		return;
 
 	wps_offset = (uint)(pwps_ie - ie);

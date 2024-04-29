@@ -24,9 +24,6 @@
 #define GVE_VERSION		"1.0.0"
 #define GVE_VERSION_PREFIX	"GVE-"
 
-// Minimum amount of time between queue kicks in msec (10 seconds)
-#define MIN_TX_TIMEOUT_GAP (1000 * 10)
-
 const char gve_version_str[] = GVE_VERSION;
 static const char gve_version_prefix[] = GVE_VERSION_PREFIX;
 
@@ -51,10 +48,10 @@ static void gve_get_stats(struct net_device *dev, struct rtnl_link_stats64 *s)
 		for (ring = 0; ring < priv->rx_cfg.num_queues; ring++) {
 			do {
 				start =
-				  u64_stats_fetch_begin_irq(&priv->rx[ring].statss);
+				  u64_stats_fetch_begin(&priv->rx[ring].statss);
 				packets = priv->rx[ring].rpackets;
 				bytes = priv->rx[ring].rbytes;
-			} while (u64_stats_fetch_retry_irq(&priv->rx[ring].statss,
+			} while (u64_stats_fetch_retry(&priv->rx[ring].statss,
 						       start));
 			s->rx_packets += packets;
 			s->rx_bytes += bytes;
@@ -64,10 +61,10 @@ static void gve_get_stats(struct net_device *dev, struct rtnl_link_stats64 *s)
 		for (ring = 0; ring < priv->tx_cfg.num_queues; ring++) {
 			do {
 				start =
-				  u64_stats_fetch_begin_irq(&priv->tx[ring].statss);
+				  u64_stats_fetch_begin(&priv->tx[ring].statss);
 				packets = priv->tx[ring].pkt_done;
 				bytes = priv->tx[ring].bytes_done;
-			} while (u64_stats_fetch_retry_irq(&priv->tx[ring].statss,
+			} while (u64_stats_fetch_retry(&priv->tx[ring].statss,
 						       start));
 			s->tx_packets += packets;
 			s->tx_bytes += bytes;
@@ -139,7 +136,7 @@ static int gve_alloc_stats_report(struct gve_priv *priv)
 	rx_stats_num = (GVE_RX_STATS_REPORT_NUM + NIC_RX_STATS_REPORT_NUM) *
 		       priv->rx_cfg.num_queues;
 	priv->stats_report_len = struct_size(priv->stats_report, stats,
-					     size_add(tx_stats_num, rx_stats_num));
+					     tx_stats_num + rx_stats_num);
 	priv->stats_report =
 		dma_alloc_coherent(&priv->pdev->dev, priv->stats_report_len,
 				   &priv->stats_report_bus, GFP_KERNEL);
@@ -232,6 +229,19 @@ static int gve_napi_poll_dqo(struct napi_struct *napi, int budget)
 	struct gve_priv *priv = block->priv;
 	bool reschedule = false;
 	int work_done = 0;
+
+	/* Clear PCI MSI-X Pending Bit Array (PBA)
+	 *
+	 * This bit is set if an interrupt event occurs while the vector is
+	 * masked. If this bit is set and we reenable the interrupt, it will
+	 * fire again. Since we're just about to poll the queue state, we don't
+	 * need it to fire again.
+	 *
+	 * Under high softirq load, it's possible that the interrupt condition
+	 * is triggered twice before we got the chance to process it.
+	 */
+	gve_write_irq_doorbell_dqo(priv, block,
+				   GVE_ITR_NO_UPDATE_DQO | GVE_ITR_CLEAR_PBA_BIT_DQO);
 
 	if (block->tx)
 		reschedule |= gve_tx_poll_dqo(block, /*do_clean=*/true);
@@ -733,9 +743,9 @@ static void gve_free_rings(struct gve_priv *priv)
 
 int gve_alloc_page(struct gve_priv *priv, struct device *dev,
 		   struct page **page, dma_addr_t *dma,
-		   enum dma_data_direction dir, gfp_t gfp_flags)
+		   enum dma_data_direction dir)
 {
-	*page = alloc_page(gfp_flags);
+	*page = alloc_page(GFP_KERNEL);
 	if (!*page) {
 		priv->page_alloc_fail++;
 		return -ENOMEM;
@@ -779,7 +789,7 @@ static int gve_alloc_queue_page_list(struct gve_priv *priv, u32 id,
 	for (i = 0; i < pages; i++) {
 		err = gve_alloc_page(priv, &priv->pdev->dev, &qpl->pages[i],
 				     &qpl->page_buses[i],
-				     gve_qpl_dma_dir(priv, id), GFP_KERNEL);
+				     gve_qpl_dma_dir(priv, id));
 		/* caller handles clean up */
 		if (err)
 			return -ENOMEM;
@@ -1106,47 +1116,9 @@ static void gve_turnup(struct gve_priv *priv)
 
 static void gve_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
-	struct gve_notify_block *block;
-	struct gve_tx_ring *tx = NULL;
-	struct gve_priv *priv;
-	u32 last_nic_done;
-	u32 current_time;
-	u32 ntfy_idx;
+	struct gve_priv *priv = netdev_priv(dev);
 
-	netdev_info(dev, "Timeout on tx queue, %d", txqueue);
-	priv = netdev_priv(dev);
-	if (txqueue > priv->tx_cfg.num_queues)
-		goto reset;
-
-	ntfy_idx = gve_tx_idx_to_ntfy(priv, txqueue);
-	if (ntfy_idx >= priv->num_ntfy_blks)
-		goto reset;
-
-	block = &priv->ntfy_blocks[ntfy_idx];
-	tx = block->tx;
-
-	current_time = jiffies_to_msecs(jiffies);
-	if (tx->last_kick_msec + MIN_TX_TIMEOUT_GAP > current_time)
-		goto reset;
-
-	/* Check to see if there are missed completions, which will allow us to
-	 * kick the queue.
-	 */
-	last_nic_done = gve_tx_load_event_counter(priv, tx);
-	if (last_nic_done - tx->done) {
-		netdev_info(dev, "Kicking queue %d", txqueue);
-		iowrite32be(GVE_IRQ_MASK, gve_irq_doorbell(priv, block));
-		napi_schedule(&block->napi);
-		tx->last_kick_msec = current_time;
-		goto out;
-	} // Else reset.
-
-reset:
 	gve_schedule_reset(priv);
-
-out:
-	if (tx)
-		tx->queue_timeout++;
 	priv->tx_timeo_cnt++;
 }
 
@@ -1247,9 +1219,9 @@ void gve_handle_report_stats(struct gve_priv *priv)
 			}
 
 			do {
-				start = u64_stats_fetch_begin_irq(&priv->tx[idx].statss);
+				start = u64_stats_fetch_begin(&priv->tx[idx].statss);
 				tx_bytes = priv->tx[idx].bytes_done;
-			} while (u64_stats_fetch_retry_irq(&priv->tx[idx].statss, start));
+			} while (u64_stats_fetch_retry(&priv->tx[idx].statss, start));
 			stats[stats_idx++] = (struct stats) {
 				.stat_name = cpu_to_be32(TX_WAKE_CNT),
 				.value = cpu_to_be64(priv->tx[idx].wake_queue),
@@ -1273,11 +1245,6 @@ void gve_handle_report_stats(struct gve_priv *priv)
 			stats[stats_idx++] = (struct stats) {
 				.stat_name = cpu_to_be32(TX_LAST_COMPLETION_PROCESSED),
 				.value = cpu_to_be64(last_completion),
-				.queue_id = cpu_to_be32(idx),
-			};
-			stats[stats_idx++] = (struct stats) {
-				.stat_name = cpu_to_be32(TX_TIMEOUT_CNT),
-				.value = cpu_to_be64(priv->tx[idx].queue_timeout),
 				.queue_id = cpu_to_be32(idx),
 			};
 		}

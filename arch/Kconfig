@@ -200,9 +200,6 @@ config HAVE_NMI
 config TRACE_IRQFLAGS_SUPPORT
 	bool
 
-config TRACE_IRQFLAGS_NMI_SUPPORT
-	bool
-
 #
 # An arch should select this if it provides all these things:
 #
@@ -262,9 +259,6 @@ config ARCH_HAS_DMA_SET_UNCACHED
 # to undo an in-place page table remap for uncached access.
 #
 config ARCH_HAS_DMA_CLEAR_UNCACHED
-	bool
-
-config ARCH_HAS_CPU_FINALIZE_INIT
 	bool
 
 # Select if arch init_task must go in the __init_task_data section
@@ -605,7 +599,6 @@ config SHADOW_CALL_STACK
 	bool "Clang Shadow Call Stack"
 	depends on CC_IS_CLANG && ARCH_SUPPORTS_SHADOW_CALL_STACK
 	depends on DYNAMIC_FTRACE_WITH_REGS || !FUNCTION_GRAPH_TRACER
-	depends on MMU
 	help
 	  This option enables Clang's Shadow Call Stack, which uses a
 	  shadow stack to protect function return addresses from being
@@ -1148,7 +1141,6 @@ config HAVE_ARCH_RANDOMIZE_KSTACK_OFFSET
 config RANDOMIZE_KSTACK_OFFSET_DEFAULT
 	bool "Randomize kernel stack offset on syscall entry"
 	depends on HAVE_ARCH_RANDOMIZE_KSTACK_OFFSET
-	depends on INIT_STACK_NONE || !CC_IS_CLANG || CLANG_VERSION >= 140000
 	help
 	  The kernel stack offset can be randomized (after pt_regs) by
 	  roughly 5 bits of entropy, frustrating memory corruption
@@ -1240,9 +1232,6 @@ config RELR
 	  are compatible).
 
 config ARCH_HAS_MEM_ENCRYPT
-	bool
-
-config ARCH_HAS_CC_PLATFORM
 	bool
 
 config HAVE_SPARSE_SYSCALL_NR

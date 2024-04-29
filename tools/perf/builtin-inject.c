@@ -142,14 +142,14 @@ static int perf_event__repipe_event_update(struct perf_tool *tool,
 
 #ifdef HAVE_AUXTRACE_SUPPORT
 
-static int copy_bytes(struct perf_inject *inject, struct perf_data *data, off_t size)
+static int copy_bytes(struct perf_inject *inject, int fd, off_t size)
 {
 	char buf[4096];
 	ssize_t ssz;
 	int ret;
 
 	while (size > 0) {
-		ssz = perf_data__read(data, buf, min(size, (off_t)sizeof(buf)));
+		ssz = read(fd, buf, min(size, (off_t)sizeof(buf)));
 		if (ssz < 0)
 			return -errno;
 		ret = output_bytes(inject, buf, ssz);
@@ -187,7 +187,7 @@ static s64 perf_event__repipe_auxtrace(struct perf_session *session,
 		ret = output_bytes(inject, event, event->header.size);
 		if (ret < 0)
 			return ret;
-		ret = copy_bytes(inject, session->data,
+		ret = copy_bytes(inject, perf_data__fd(session->data),
 				 event->auxtrace.size);
 	} else {
 		ret = output_bytes(inject, event,
@@ -463,7 +463,6 @@ static int perf_event__repipe_buildid_mmap2(struct perf_tool *tool,
 			dso->hit = 1;
 		}
 		dso__put(dso);
-		perf_event__repipe(tool, event, sample, machine);
 		return 0;
 	}
 
@@ -756,16 +755,12 @@ static int parse_vm_time_correlation(const struct option *opt, const char *str, 
 	return inject->itrace_synth_opts.vm_tm_corr_args ? 0 : -ENOMEM;
 }
 
-static int output_fd(struct perf_inject *inject)
-{
-	return inject->in_place_update ? -1 : perf_data__fd(&inject->output);
-}
-
 static int __cmd_inject(struct perf_inject *inject)
 {
 	int ret = -EINVAL;
 	struct perf_session *session = inject->session;
-	int fd = output_fd(inject);
+	struct perf_data *data_out = &inject->output;
+	int fd = inject->in_place_update ? -1 : perf_data__fd(data_out);
 	u64 output_data_offset;
 
 	signal(SIGINT, sig_handler);
@@ -824,7 +819,7 @@ static int __cmd_inject(struct perf_inject *inject)
 		inject->tool.ordered_events = true;
 		inject->tool.ordering_requires_timestamps = true;
 		/* Allow space in the header for new attributes */
-		output_data_offset = roundup(8192 + session->header.data_offset, 4096);
+		output_data_offset = 4096;
 		if (inject->strip)
 			strip_init(inject);
 	}
@@ -1011,7 +1006,7 @@ int cmd_inject(int argc, const char **argv)
 	}
 
 	inject.session = __perf_session__new(&data, repipe,
-					     output_fd(&inject),
+					     perf_data__fd(&inject.output),
 					     &inject.tool);
 	if (IS_ERR(inject.session)) {
 		ret = PTR_ERR(inject.session);
@@ -1074,8 +1069,7 @@ out_delete:
 	zstd_fini(&(inject.session->zstd_data));
 	perf_session__delete(inject.session);
 out_close_output:
-	if (!inject.in_place_update)
-		perf_data__close(&inject.output);
+	perf_data__close(&inject.output);
 	free(inject.itrace_synth_opts.vm_tm_corr_args);
 	return ret;
 }

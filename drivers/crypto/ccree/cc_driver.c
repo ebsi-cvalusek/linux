@@ -103,8 +103,7 @@ MODULE_DEVICE_TABLE(of, arm_ccree_dev_of_match);
 static void init_cc_cache_params(struct cc_drvdata *drvdata)
 {
 	struct device *dev = drvdata_to_dev(drvdata);
-	u32 cache_params, ace_const, val;
-	u64 mask;
+	u32 cache_params, ace_const, val, mask;
 
 	/* compute CC_AXIM_CACHE_PARAMS */
 	cache_params = cc_ioread(drvdata, CC_REG(AXIM_CACHE_PARAMS));
@@ -656,17 +655,9 @@ static struct platform_driver ccree_driver = {
 
 static int __init ccree_init(void)
 {
-	int rc;
-
 	cc_debugfs_global_init();
 
-	rc = platform_driver_register(&ccree_driver);
-	if (rc) {
-		cc_debugfs_global_fini();
-		return rc;
-	}
-
-	return 0;
+	return platform_driver_register(&ccree_driver);
 }
 module_init(ccree_init);
 

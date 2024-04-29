@@ -36,14 +36,10 @@ void amdgpu_dm_set_psr_caps(struct dc_link *link)
 {
 	uint8_t dpcd_data[EDP_PSR_RECEIVER_CAP_SIZE];
 
-	if (!(link->connector_signal & SIGNAL_TYPE_EDP)) {
-		link->psr_settings.psr_feature_enabled = false;
+	if (!(link->connector_signal & SIGNAL_TYPE_EDP))
 		return;
-	}
-	if (link->type == dc_connection_none) {
-		link->psr_settings.psr_feature_enabled = false;
+	if (link->type == dc_connection_none)
 		return;
-	}
 	if (dm_helpers_dp_read_dpcd(NULL, link, DP_PSR_SUPPORT,
 					dpcd_data, sizeof(dpcd_data))) {
 		link->dpcd_caps.psr_caps.psr_version = dpcd_data[0];
@@ -78,8 +74,10 @@ bool amdgpu_dm_link_setup_psr(struct dc_stream_state *stream)
 
 	link = stream->link;
 
-	if (link->psr_settings.psr_version != DC_PSR_VERSION_UNSUPPORTED) {
-		psr_config.psr_version = link->psr_settings.psr_version;
+	psr_config.psr_version = link->dpcd_caps.psr_caps.psr_version;
+
+	if (psr_config.psr_version > 0) {
+		psr_config.psr_exit_link_training_required = 0x1;
 		psr_config.psr_frame_capture_indication_req = 0;
 		psr_config.psr_rfb_setup_time = 0x37;
 		psr_config.psr_sdp_transmit_line_num_deadline = 0x20;

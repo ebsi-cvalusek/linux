@@ -128,8 +128,7 @@ static bool check_user_trigger(struct trace_event_file *file)
 {
 	struct event_trigger_data *data;
 
-	list_for_each_entry_rcu(data, &file->triggers, list,
-				lockdep_is_held(&event_mutex)) {
+	list_for_each_entry_rcu(data, &file->triggers, list) {
 		if (data->flags & EVENT_TRIGGER_FL_PROBE)
 			continue;
 		return true;
@@ -956,16 +955,6 @@ traceon_trigger(struct event_trigger_data *data,
 		struct trace_buffer *buffer, void *rec,
 		struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (tracer_tracing_is_on(file->tr))
-			return;
-
-		tracer_tracing_on(file->tr);
-		return;
-	}
-
 	if (tracing_is_on())
 		return;
 
@@ -977,15 +966,8 @@ traceon_count_trigger(struct event_trigger_data *data,
 		      struct trace_buffer *buffer, void *rec,
 		      struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (tracer_tracing_is_on(file->tr))
-			return;
-	} else {
-		if (tracing_is_on())
-			return;
-	}
+	if (tracing_is_on())
+		return;
 
 	if (!data->count)
 		return;
@@ -993,10 +975,7 @@ traceon_count_trigger(struct event_trigger_data *data,
 	if (data->count != -1)
 		(data->count)--;
 
-	if (file)
-		tracer_tracing_on(file->tr);
-	else
-		tracing_on();
+	tracing_on();
 }
 
 static void
@@ -1004,16 +983,6 @@ traceoff_trigger(struct event_trigger_data *data,
 		 struct trace_buffer *buffer, void *rec,
 		 struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (!tracer_tracing_is_on(file->tr))
-			return;
-
-		tracer_tracing_off(file->tr);
-		return;
-	}
-
 	if (!tracing_is_on())
 		return;
 
@@ -1025,15 +994,8 @@ traceoff_count_trigger(struct event_trigger_data *data,
 		       struct trace_buffer *buffer, void *rec,
 		       struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file) {
-		if (!tracer_tracing_is_on(file->tr))
-			return;
-	} else {
-		if (!tracing_is_on())
-			return;
-	}
+	if (!tracing_is_on())
+		return;
 
 	if (!data->count)
 		return;
@@ -1041,10 +1003,7 @@ traceoff_count_trigger(struct event_trigger_data *data,
 	if (data->count != -1)
 		(data->count)--;
 
-	if (file)
-		tracer_tracing_off(file->tr);
-	else
-		tracing_off();
+	tracing_off();
 }
 
 static int
@@ -1161,10 +1120,8 @@ register_snapshot_trigger(char *glob, struct event_trigger_ops *ops,
 			  struct event_trigger_data *data,
 			  struct trace_event_file *file)
 {
-	int ret = tracing_alloc_snapshot_instance(file->tr);
-
-	if (ret < 0)
-		return ret;
+	if (tracing_alloc_snapshot_instance(file->tr) != 0)
+		return 0;
 
 	return register_trigger(glob, ops, data, file);
 }
@@ -1243,12 +1200,7 @@ stacktrace_trigger(struct event_trigger_data *data,
 		   struct trace_buffer *buffer,  void *rec,
 		   struct ring_buffer_event *event)
 {
-	struct trace_event_file *file = data->private_data;
-
-	if (file)
-		__trace_stack(file->tr, tracing_gen_ctx(), STACK_SKIP);
-	else
-		trace_dump_stack(STACK_SKIP);
+	trace_dump_stack(STACK_SKIP);
 }
 
 static void

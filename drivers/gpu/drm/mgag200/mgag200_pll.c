@@ -268,8 +268,7 @@ static void mgag200_pixpll_update_g200se_04(struct mgag200_pll *pixpll,
 	pixpllcp = pixpllc->p - 1;
 	pixpllcs = pixpllc->s;
 
-	// For G200SE A, BIT(7) should be set unconditionally.
-	xpixpllcm = BIT(7) | pixpllcm;
+	xpixpllcm = pixpllcm | ((pixpllcn & BIT(8)) >> 1);
 	xpixpllcn = pixpllcn;
 	xpixpllcp = (pixpllcs << 3) | pixpllcp;
 
@@ -405,9 +404,9 @@ mgag200_pixpll_update_g200wb(struct mgag200_pll *pixpll, const struct mgag200_pl
 		udelay(50);
 
 		/* program pixel pll register */
-		WREG_DAC(MGA1064_WB_PIX_PLLC_N, xpixpllcn);
-		WREG_DAC(MGA1064_WB_PIX_PLLC_M, xpixpllcm);
-		WREG_DAC(MGA1064_WB_PIX_PLLC_P, xpixpllcp);
+		WREG_DAC(MGA1064_PIX_PLLC_N, xpixpllcn);
+		WREG_DAC(MGA1064_PIX_PLLC_M, xpixpllcm);
+		WREG_DAC(MGA1064_PIX_PLLC_P, xpixpllcp);
 
 		udelay(50);
 

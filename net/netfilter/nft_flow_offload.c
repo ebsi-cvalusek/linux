@@ -36,15 +36,6 @@ static void nft_default_forward_path(struct nf_flow_route *route,
 	route->tuple[dir].xmit_type	= nft_xmit_type(dst_cache);
 }
 
-static bool nft_is_valid_ether_device(const struct net_device *dev)
-{
-	if (!dev || (dev->flags & IFF_LOOPBACK) || dev->type != ARPHRD_ETHER ||
-	    dev->addr_len != ETH_ALEN || !is_valid_ether_addr(dev->dev_addr))
-		return false;
-
-	return true;
-}
-
 static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
 				     const struct dst_entry *dst_cache,
 				     const struct nf_conn *ct,
@@ -55,9 +46,6 @@ static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
 	struct net_device *dev = dst_cache->dev;
 	struct neighbour *n;
 	u8 nud_state;
-
-	if (!nft_is_valid_ether_device(dev))
-		goto out;
 
 	n = dst_neigh_lookup(dst_cache, daddr);
 	if (!n)
@@ -72,7 +60,6 @@ static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
 	if (!(nud_state & NUD_VALID))
 		return -1;
 
-out:
 	return dev_fill_forward_path(dev, ha, stack);
 }
 
@@ -90,6 +77,15 @@ struct nft_forward_info {
 	u8 h_dest[ETH_ALEN];
 	enum flow_offload_xmit_type xmit_type;
 };
+
+static bool nft_is_valid_ether_device(const struct net_device *dev)
+{
+	if (!dev || (dev->flags & IFF_LOOPBACK) || dev->type != ARPHRD_ETHER ||
+	    dev->addr_len != ETH_ALEN || !is_valid_ether_addr(dev->dev_addr))
+		return false;
+
+	return true;
+}
 
 static void nft_dev_path_info(const struct net_device_path_stack *stack,
 			      struct nft_forward_info *info,
@@ -123,8 +119,7 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
 				info->indev = NULL;
 				break;
 			}
-			if (!info->outdev)
-				info->outdev = path->dev;
+			info->outdev = path->dev;
 			info->encap[info->num_encaps].id = path->encap.id;
 			info->encap[info->num_encaps].proto = path->encap.proto;
 			info->num_encaps++;
@@ -240,14 +235,9 @@ static int nft_flow_route(const struct nft_pktinfo *pkt,
 		break;
 	}
 
-	if (!dst_hold_safe(this_dst))
-		return -ENOENT;
-
 	nf_route(nft_net(pkt), &other_dst, &fl, false, nft_pf(pkt));
-	if (!other_dst) {
-		dst_release(this_dst);
+	if (!other_dst)
 		return -ENOENT;
-	}
 
 	nft_default_forward_path(route, this_dst, dir);
 	nft_default_forward_path(route, other_dst, !dir);
@@ -303,8 +293,7 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	case IPPROTO_TCP:
 		tcph = skb_header_pointer(pkt->skb, nft_thoff(pkt),
 					  sizeof(_tcph), &_tcph);
-		if (unlikely(!tcph || tcph->fin || tcph->rst ||
-			     !nf_conntrack_tcp_established(ct)))
+		if (unlikely(!tcph || tcph->fin || tcph->rst))
 			goto out;
 		break;
 	case IPPROTO_UDP:
@@ -331,7 +320,8 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	if (!flow)
 		goto err_flow_alloc;
 
-	flow_offload_route_init(flow, &route);
+	if (flow_offload_route_init(flow, &route) < 0)
+		goto err_flow_add;
 
 	if (tcph) {
 		ct->proto.tcp.seen[0].flags |= IP_CT_TCP_FLAG_BE_LIBERAL;
@@ -342,12 +332,12 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	if (ret < 0)
 		goto err_flow_add;
 
+	dst_release(route.tuple[!dir].dst);
 	return;
 
 err_flow_add:
 	flow_offload_free(flow);
 err_flow_alloc:
-	dst_release(route.tuple[dir].dst);
 	dst_release(route.tuple[!dir].dst);
 err_flow_route:
 	clear_bit(IPS_OFFLOAD_BIT, &ct->status);
@@ -360,11 +350,6 @@ static int nft_flow_offload_validate(const struct nft_ctx *ctx,
 				     const struct nft_data **data)
 {
 	unsigned int hook_mask = (1 << NF_INET_FORWARD);
-
-	if (ctx->family != NFPROTO_IPV4 &&
-	    ctx->family != NFPROTO_IPV6 &&
-	    ctx->family != NFPROTO_INET)
-		return -EOPNOTSUPP;
 
 	return nft_chain_validate_hooks(ctx->chain, hook_mask);
 }
@@ -390,10 +375,8 @@ static int nft_flow_offload_init(const struct nft_ctx *ctx,
 	if (IS_ERR(flowtable))
 		return PTR_ERR(flowtable);
 
-	if (!nft_use_inc(&flowtable->use))
-		return -EMFILE;
-
 	priv->flowtable = flowtable;
+	flowtable->use++;
 
 	return nf_ct_netns_get(ctx->net, ctx->family);
 }
@@ -412,7 +395,7 @@ static void nft_flow_offload_activate(const struct nft_ctx *ctx,
 {
 	struct nft_flow_offload *priv = nft_expr_priv(expr);
 
-	nft_use_inc_restore(&priv->flowtable->use);
+	priv->flowtable->use++;
 }
 
 static void nft_flow_offload_destroy(const struct nft_ctx *ctx,

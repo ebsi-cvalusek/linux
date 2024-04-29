@@ -474,8 +474,6 @@ struct bgmac {
 	int irq;
 	u32 int_mask;
 
-	bool in_init;
-
 	/* Current MAC state */
 	int mac_speed;
 	int mac_duplex;

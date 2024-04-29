@@ -204,7 +204,7 @@ static int tuntap_write(struct iss_net_private *lp, struct sk_buff **skb)
 	return simc_write(lp->tp.info.tuntap.fd, (*skb)->data, (*skb)->len);
 }
 
-static unsigned short tuntap_protocol(struct sk_buff *skb)
+unsigned short tuntap_protocol(struct sk_buff *skb)
 {
 	return eth_type_trans(skb, skb->dev);
 }
@@ -231,7 +231,7 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 
 	init += sizeof(TRANSPORT_TUNTAP_NAME) - 1;
 	if (*init == ',') {
-		rem = split_if_spec(init + 1, &mac_str, &dev_name, NULL);
+		rem = split_if_spec(init + 1, &mac_str, &dev_name);
 		if (rem != NULL) {
 			pr_err("%s: extra garbage on specification : '%s'\n",
 			       dev->name, rem);
@@ -477,7 +477,7 @@ static int iss_net_change_mtu(struct net_device *dev, int new_mtu)
 	return -EINVAL;
 }
 
-static void iss_net_user_timer_expire(struct timer_list *unused)
+void iss_net_user_timer_expire(struct timer_list *unused)
 {
 }
 
@@ -502,24 +502,16 @@ static const struct net_device_ops iss_netdev_ops = {
 	.ndo_set_rx_mode	= iss_net_set_multicast_list,
 };
 
-static void iss_net_pdev_release(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct iss_net_private *lp =
-		container_of(pdev, struct iss_net_private, pdev);
-
-	free_netdev(lp->dev);
-}
-
-static void iss_net_configure(int index, char *init)
+static int iss_net_configure(int index, char *init)
 {
 	struct net_device *dev;
 	struct iss_net_private *lp;
+	int err;
 
 	dev = alloc_etherdev(sizeof(*lp));
 	if (dev == NULL) {
 		pr_err("eth_configure: failed to allocate device\n");
-		return;
+		return 1;
 	}
 
 	/* Initialize private element. */
@@ -548,7 +540,7 @@ static void iss_net_configure(int index, char *init)
 	if (!tuntap_probe(lp, index, init)) {
 		pr_err("%s: invalid arguments. Skipping device!\n",
 		       dev->name);
-		goto err_free_netdev;
+		goto errout;
 	}
 
 	pr_info("Netdevice %d (%pM)\n", index, dev->dev_addr);
@@ -556,8 +548,7 @@ static void iss_net_configure(int index, char *init)
 	/* sysfs register */
 
 	if (!driver_registered) {
-		if (platform_driver_register(&iss_net_driver))
-			goto err_free_netdev;
+		platform_driver_register(&iss_net_driver);
 		driver_registered = 1;
 	}
 
@@ -567,9 +558,7 @@ static void iss_net_configure(int index, char *init)
 
 	lp->pdev.id = index;
 	lp->pdev.name = DRIVER_NAME;
-	lp->pdev.dev.release = iss_net_pdev_release;
-	if (platform_device_register(&lp->pdev))
-		goto err_free_netdev;
+	platform_device_register(&lp->pdev);
 	SET_NETDEV_DEV(dev, &lp->pdev.dev);
 
 	dev->netdev_ops = &iss_netdev_ops;
@@ -578,20 +567,23 @@ static void iss_net_configure(int index, char *init)
 	dev->irq = -1;
 
 	rtnl_lock();
-	if (register_netdevice(dev)) {
-		rtnl_unlock();
-		pr_err("%s: error registering net device!\n", dev->name);
-		platform_device_unregister(&lp->pdev);
-		return;
-	}
+	err = register_netdevice(dev);
 	rtnl_unlock();
+
+	if (err) {
+		pr_err("%s: error registering net device!\n", dev->name);
+		/* XXX: should we call ->remove() here? */
+		free_netdev(dev);
+		return 1;
+	}
 
 	timer_setup(&lp->tl, iss_net_user_timer_expire, 0);
 
-	return;
+	return 0;
 
-err_free_netdev:
-	free_netdev(dev);
+errout:
+	/* FIXME: unregister; free, etc.. */
+	return -EIO;
 }
 
 /* ------------------------------------------------------------------------- */

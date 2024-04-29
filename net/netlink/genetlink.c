@@ -1174,17 +1174,13 @@ static int ctrl_dumppolicy_start(struct netlink_callback *cb)
 							     op.policy,
 							     op.maxattr);
 			if (err)
-				goto err_free_state;
+				return err;
 		}
 	}
 
 	if (!ctx->state)
 		return -ENODATA;
 	return 0;
-
-err_free_state:
-	netlink_policy_dump_free(ctx->state);
-	return err;
 }
 
 static void *ctrl_dumppolicy_prep(struct sk_buff *skb,
@@ -1378,9 +1374,6 @@ static int genl_bind(struct net *net, int group)
 		grp = &family->mcgrps[i];
 		if ((grp->flags & GENL_UNS_ADMIN_PERM) &&
 		    !ns_capable(net->user_ns, CAP_NET_ADMIN))
-			ret = -EPERM;
-		if (grp->cap_sys_admin &&
-		    !ns_capable(net->user_ns, CAP_SYS_ADMIN))
 			ret = -EPERM;
 
 		break;

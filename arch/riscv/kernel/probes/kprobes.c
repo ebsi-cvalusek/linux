@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0+
 
-#define pr_fmt(fmt) "kprobes: " fmt
-
 #include <linux/kprobes.h>
 #include <linux/extable.h>
 #include <linux/slab.h>
@@ -48,35 +46,18 @@ static void __kprobes arch_simulate_insn(struct kprobe *p, struct pt_regs *regs)
 	post_kprobe_handler(p, kcb, regs);
 }
 
-static bool __kprobes arch_check_kprobe(struct kprobe *p)
-{
-	unsigned long tmp  = (unsigned long)p->addr - p->offset;
-	unsigned long addr = (unsigned long)p->addr;
-
-	while (tmp <= addr) {
-		if (tmp == addr)
-			return true;
-
-		tmp += GET_INSN_LENGTH(*(u16 *)tmp);
-	}
-
-	return false;
-}
-
 int __kprobes arch_prepare_kprobe(struct kprobe *p)
 {
-	u16 *insn = (u16 *)p->addr;
+	unsigned long probe_addr = (unsigned long)p->addr;
 
-	if ((unsigned long)insn & 0x1)
-		return -EILSEQ;
+	if (probe_addr & 0x1) {
+		pr_warn("Address not aligned.\n");
 
-	if (!arch_check_kprobe(p))
-		return -EILSEQ;
+		return -EINVAL;
+	}
 
 	/* copy instruction */
-	p->opcode = (kprobe_opcode_t)(*insn++);
-	if (GET_INSN_LENGTH(p->opcode) == 4)
-		p->opcode |= (kprobe_opcode_t)(*insn) << 16;
+	p->opcode = *p->addr;
 
 	/* decode instruction */
 	switch (riscv_probe_decode_insn(p->addr, &p->ainsn.api)) {
@@ -210,7 +191,7 @@ static int __kprobes reenter_kprobe(struct kprobe *p,
 		break;
 	case KPROBE_HIT_SS:
 	case KPROBE_REENTER:
-		pr_warn("Failed to recover from reentered kprobes.\n");
+		pr_warn("Unrecoverable kprobe detected.\n");
 		dump_kprobe(p);
 		BUG();
 		break;

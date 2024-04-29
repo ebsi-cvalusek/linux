@@ -8,7 +8,6 @@
 #define BSS_FIRST_SECTIONS *(.bss.prominit)
 #define EMITS_PT_NOTE
 #define RO_EXCEPTION_TABLE_ALIGN	0
-#define RUNTIME_DISCARD_EXIT
 
 #define SOFT_MASK_TABLE(align)						\
 	. = ALIGN(align);						\
@@ -32,10 +31,6 @@
 #include <asm/thread_info.h>
 
 #define STRICT_ALIGN_SIZE	(1 << CONFIG_DATA_SHIFT)
-
-#if STRICT_ALIGN_SIZE < PAGE_SIZE
-#error "CONFIG_DATA_SHIFT must be >= PAGE_SHIFT"
-#endif
 
 ENTRY(_stext)
 
@@ -148,12 +143,6 @@ SECTIONS
 	SOFT_MASK_TABLE(8)
 	RESTART_TABLE(8)
 
-	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
-		__start_opd = .;
-		KEEP(*(.opd))
-		__end_opd = .;
-	}
-
 	. = ALIGN(8);
 	__stf_entry_barrier_fixup : AT(ADDR(__stf_entry_barrier_fixup) - LOAD_OFFSET) {
 		__start___stf_entry_barrier_fixup = .;
@@ -215,16 +204,12 @@ SECTIONS
 	}
 #endif
 
-	/*
-	 * Various code relies on __init_begin being at the strict RWX boundary.
-	 */
-	. = ALIGN(STRICT_ALIGN_SIZE);
-	__srwx_boundary = .;
-	__init_begin = .;
-
 /*
  * Init sections discarded at runtime
  */
+	. = ALIGN(STRICT_ALIGN_SIZE);
+	__init_begin = .;
+	. = ALIGN(PAGE_SIZE);
 	.init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {
 		_sinittext = .;
 		INIT_TEXT
@@ -290,7 +275,9 @@ SECTIONS
 	. = ALIGN(8);
 	.dynsym : AT(ADDR(.dynsym) - LOAD_OFFSET)
 	{
+#ifdef CONFIG_PPC32
 		__dynamic_symtab = .;
+#endif
 		*(.dynsym)
 	}
 	.dynstr : AT(ADDR(.dynstr) - LOAD_OFFSET) { *(.dynstr) }
@@ -352,13 +339,21 @@ SECTIONS
 		*(.branch_lt)
 	}
 
-	.got : AT(ADDR(.got) - LOAD_OFFSET) ALIGN(256) {
-		*(.got)
+	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
+		__start_opd = .;
+		KEEP(*(.opd))
+		__end_opd = .;
+	}
+
+	. = ALIGN(256);
+	.got : AT(ADDR(.got) - LOAD_OFFSET) {
+		__toc_start = .;
 #ifndef CONFIG_RELOCATABLE
 		__prom_init_toc_start = .;
-		arch/powerpc/kernel/prom_init.o*(.toc)
+		arch/powerpc/kernel/prom_init.o*(.toc .got)
 		__prom_init_toc_end = .;
 #endif
+		*(.got)
 		*(.toc)
 	}
 #endif
@@ -406,12 +401,9 @@ SECTIONS
 	DISCARDS
 	/DISCARD/ : {
 		*(*.EMB.apuinfo)
-		*(.glink .iplt .plt .comment)
+		*(.glink .iplt .plt .rela* .comment)
 		*(.gnu.version*)
 		*(.gnu.attributes)
 		*(.eh_frame)
-#ifndef CONFIG_RELOCATABLE
-		*(.rela*)
-#endif
 	}
 }

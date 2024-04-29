@@ -197,29 +197,6 @@ static void vc4_hvs_update_gamma_lut(struct drm_crtc *crtc)
 	vc4_hvs_lut_load(crtc);
 }
 
-u8 vc4_hvs_get_fifo_frame_count(struct drm_device *dev, unsigned int fifo)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
-	u8 field = 0;
-
-	switch (fifo) {
-	case 0:
-		field = VC4_GET_FIELD(HVS_READ(SCALER_DISPSTAT1),
-				      SCALER_DISPSTAT1_FRCNT0);
-		break;
-	case 1:
-		field = VC4_GET_FIELD(HVS_READ(SCALER_DISPSTAT1),
-				      SCALER_DISPSTAT1_FRCNT1);
-		break;
-	case 2:
-		field = VC4_GET_FIELD(HVS_READ(SCALER_DISPSTAT2),
-				      SCALER_DISPSTAT2_FRCNT2);
-		break;
-	}
-
-	return field;
-}
-
 int vc4_hvs_get_fifo_from_output(struct drm_device *dev, unsigned int output)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
@@ -388,16 +365,17 @@ static void vc4_hvs_update_dlist(struct drm_crtc *crtc)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
-	unsigned long flags;
 
 	if (crtc->state->event) {
+		unsigned long flags;
+
 		crtc->state->event->pipe = drm_crtc_index(crtc);
 
 		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
 
 		spin_lock_irqsave(&dev->event_lock, flags);
 
-		if (!vc4_crtc->feeds_txp || vc4_state->txp_armed) {
+		if (!vc4_state->feed_txp || vc4_state->txp_armed) {
 			vc4_crtc->event = crtc->state->event;
 			crtc->state->event = NULL;
 		}
@@ -410,22 +388,6 @@ static void vc4_hvs_update_dlist(struct drm_crtc *crtc)
 		HVS_WRITE(SCALER_DISPLISTX(vc4_state->assigned_channel),
 			  vc4_state->mm.start);
 	}
-
-	spin_lock_irqsave(&vc4_crtc->irq_lock, flags);
-	vc4_crtc->current_dlist = vc4_state->mm.start;
-	spin_unlock_irqrestore(&vc4_crtc->irq_lock, flags);
-}
-
-void vc4_hvs_atomic_begin(struct drm_crtc *crtc,
-			  struct drm_atomic_state *state)
-{
-	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
-	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
-	unsigned long flags;
-
-	spin_lock_irqsave(&vc4_crtc->irq_lock, flags);
-	vc4_crtc->current_hvs_channel = vc4_state->assigned_channel;
-	spin_unlock_irqrestore(&vc4_crtc->irq_lock, flags);
 }
 
 void vc4_hvs_atomic_enable(struct drm_crtc *crtc,
@@ -433,9 +395,10 @@ void vc4_hvs_atomic_enable(struct drm_crtc *crtc,
 {
 	struct drm_device *dev = crtc->dev;
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+	struct drm_crtc_state *new_crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(new_crtc_state);
 	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
-	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
-	bool oneshot = vc4_crtc->feeds_txp;
+	bool oneshot = vc4_state->feed_txp;
 
 	vc4_hvs_update_dlist(crtc);
 	vc4_hvs_init_channel(vc4, crtc, mode, oneshot);
@@ -605,7 +568,6 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 	struct vc4_hvs *hvs = NULL;
 	int ret;
 	u32 dispctrl;
-	u32 reg;
 
 	hvs = devm_kzalloc(&pdev->dev, sizeof(*hvs), GFP_KERNEL);
 	if (!hvs)
@@ -677,26 +639,6 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 
 	vc4->hvs = hvs;
 
-	reg = HVS_READ(SCALER_DISPECTRL);
-	reg &= ~SCALER_DISPECTRL_DSP2_MUX_MASK;
-	HVS_WRITE(SCALER_DISPECTRL,
-		  reg | VC4_SET_FIELD(0, SCALER_DISPECTRL_DSP2_MUX));
-
-	reg = HVS_READ(SCALER_DISPCTRL);
-	reg &= ~SCALER_DISPCTRL_DSP3_MUX_MASK;
-	HVS_WRITE(SCALER_DISPCTRL,
-		  reg | VC4_SET_FIELD(3, SCALER_DISPCTRL_DSP3_MUX));
-
-	reg = HVS_READ(SCALER_DISPEOLN);
-	reg &= ~SCALER_DISPEOLN_DSP4_MUX_MASK;
-	HVS_WRITE(SCALER_DISPEOLN,
-		  reg | VC4_SET_FIELD(3, SCALER_DISPEOLN_DSP4_MUX));
-
-	reg = HVS_READ(SCALER_DISPDITHER);
-	reg &= ~SCALER_DISPDITHER_DSP5_MUX_MASK;
-	HVS_WRITE(SCALER_DISPDITHER,
-		  reg | VC4_SET_FIELD(3, SCALER_DISPDITHER_DSP5_MUX));
-
 	dispctrl = HVS_READ(SCALER_DISPCTRL);
 
 	dispctrl |= SCALER_DISPCTRL_ENABLE;
@@ -704,6 +646,10 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 		    SCALER_DISPCTRL_DISPEIRQ(1) |
 		    SCALER_DISPCTRL_DISPEIRQ(2);
 
+	/* Set DSP3 (PV1) to use HVS channel 2, which would otherwise
+	 * be unused.
+	 */
+	dispctrl &= ~SCALER_DISPCTRL_DSP3_MUX_MASK;
 	dispctrl &= ~(SCALER_DISPCTRL_DMAEIRQ |
 		      SCALER_DISPCTRL_SLVWREIRQ |
 		      SCALER_DISPCTRL_SLVRDEIRQ |
@@ -717,17 +663,7 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 		      SCALER_DISPCTRL_DSPEISLUR(1) |
 		      SCALER_DISPCTRL_DSPEISLUR(2) |
 		      SCALER_DISPCTRL_SCLEIRQ);
-
-	/* Set AXI panic mode.
-	 * VC4 panics when < 2 lines in FIFO.
-	 * VC5 panics when less than 1 line in the FIFO.
-	 */
-	dispctrl &= ~(SCALER_DISPCTRL_PANIC0_MASK |
-		      SCALER_DISPCTRL_PANIC1_MASK |
-		      SCALER_DISPCTRL_PANIC2_MASK);
-	dispctrl |= VC4_SET_FIELD(2, SCALER_DISPCTRL_PANIC0);
-	dispctrl |= VC4_SET_FIELD(2, SCALER_DISPCTRL_PANIC1);
-	dispctrl |= VC4_SET_FIELD(2, SCALER_DISPCTRL_PANIC2);
+	dispctrl |= VC4_SET_FIELD(2, SCALER_DISPCTRL_DSP3_MUX);
 
 	HVS_WRITE(SCALER_DISPCTRL, dispctrl);
 

@@ -33,7 +33,6 @@ struct rk_gmac_ops {
 	void (*set_rgmii_speed)(struct rk_priv_data *bsp_priv, int speed);
 	void (*set_rmii_speed)(struct rk_priv_data *bsp_priv, int speed);
 	void (*integrated_phy_powerup)(struct rk_priv_data *bsp_priv);
-	bool regs_valid;
 	u32 regs[];
 };
 
@@ -1093,7 +1092,6 @@ static const struct rk_gmac_ops rk3568_ops = {
 	.set_to_rmii = rk3568_set_to_rmii,
 	.set_rgmii_speed = rk3568_set_gmac_speed,
 	.set_rmii_speed = rk3568_set_gmac_speed,
-	.regs_valid = true,
 	.regs = {
 		0xfe2a0000, /* gmac0 */
 		0xfe010000, /* gmac1 */
@@ -1347,6 +1345,9 @@ static int phy_power_on(struct rk_priv_data *bsp_priv, bool enable)
 	int ret;
 	struct device *dev = &bsp_priv->pdev->dev;
 
+	if (!ldo)
+		return 0;
+
 	if (enable) {
 		ret = regulator_enable(ldo);
 		if (ret)
@@ -1382,7 +1383,7 @@ static struct rk_priv_data *rk_gmac_setup(struct platform_device *pdev,
 	 * to be distinguished.
 	 */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (res && ops->regs_valid) {
+	if (res) {
 		int i = 0;
 
 		while (ops->regs[i]) {
@@ -1394,11 +1395,14 @@ static struct rk_priv_data *rk_gmac_setup(struct platform_device *pdev,
 		}
 	}
 
-	bsp_priv->regulator = devm_regulator_get(dev, "phy");
+	bsp_priv->regulator = devm_regulator_get_optional(dev, "phy");
 	if (IS_ERR(bsp_priv->regulator)) {
-		ret = PTR_ERR(bsp_priv->regulator);
-		dev_err_probe(dev, ret, "failed to get phy regulator\n");
-		return ERR_PTR(ret);
+		if (PTR_ERR(bsp_priv->regulator) == -EPROBE_DEFER) {
+			dev_err(dev, "phy regulator is not available yet, deferred probing\n");
+			return ERR_PTR(-EPROBE_DEFER);
+		}
+		dev_err(dev, "no regulator found\n");
+		bsp_priv->regulator = NULL;
 	}
 
 	ret = of_property_read_string(dev->of_node, "clock_in_out", &strings);

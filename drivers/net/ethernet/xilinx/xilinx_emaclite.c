@@ -206,13 +206,12 @@ static void xemaclite_disable_interrupts(struct net_local *drvdata)
  * This function writes data from a 16-bit aligned buffer to a 32-bit aligned
  * address in the EmacLite device.
  */
-static void xemaclite_aligned_write(const void *src_ptr, u32 *dest_ptr,
+static void xemaclite_aligned_write(void *src_ptr, u32 *dest_ptr,
 				    unsigned length)
 {
-	const u16 *from_u16_ptr;
 	u32 align_buffer;
 	u32 *to_u32_ptr;
-	u16 *to_u16_ptr;
+	u16 *from_u16_ptr, *to_u16_ptr;
 
 	to_u32_ptr = dest_ptr;
 	from_u16_ptr = src_ptr;
@@ -471,7 +470,7 @@ static u16 xemaclite_recv_data(struct net_local *drvdata, u8 *data, int maxlen)
  * buffers (if configured).
  */
 static void xemaclite_update_address(struct net_local *drvdata,
-				     const u8 *address_ptr)
+				     u8 *address_ptr)
 {
 	void __iomem *addr;
 	u32 reg_data;
@@ -544,7 +543,7 @@ static void xemaclite_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	xemaclite_enable_interrupts(lp);
 
 	if (lp->deferred_skb) {
-		dev_kfree_skb_irq(lp->deferred_skb);
+		dev_kfree_skb(lp->deferred_skb);
 		lp->deferred_skb = NULL;
 		dev->stats.tx_errors++;
 	}
@@ -823,10 +822,10 @@ static int xemaclite_mdio_write(struct mii_bus *bus, int phy_id, int reg,
 static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 {
 	struct mii_bus *bus;
+	int rc;
 	struct resource res;
 	struct device_node *np = of_get_parent(lp->phy_node);
 	struct device_node *npp;
-	int rc, ret;
 
 	/* Don't register the MDIO bus if the phy_node or its parent node
 	 * can't be found.
@@ -836,14 +835,8 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 		return -ENODEV;
 	}
 	npp = of_get_parent(np);
-	ret = of_address_to_resource(npp, 0, &res);
-	of_node_put(npp);
-	if (ret) {
-		dev_err(dev, "%s resource error!\n",
-			dev->of_node->full_name);
-		of_node_put(np);
-		return ret;
-	}
+
+	of_address_to_resource(npp, 0, &res);
 	if (lp->ndev->mem_start != res.start) {
 		struct phy_device *phydev;
 		phydev = of_phy_find_device(lp->phy_node);
@@ -852,7 +845,6 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 				 "MDIO of the phy is not registered yet\n");
 		else
 			put_device(&phydev->mdio.dev);
-		of_node_put(np);
 		return 0;
 	}
 
@@ -865,7 +857,6 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 	bus = mdiobus_alloc();
 	if (!bus) {
 		dev_err(dev, "Failed to allocate mdiobus\n");
-		of_node_put(np);
 		return -ENOMEM;
 	}
 
@@ -878,7 +869,6 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 	bus->parent = dev;
 
 	rc = of_mdiobus_register(bus, np);
-	of_node_put(np);
 	if (rc) {
 		dev_err(dev, "Failed to register mdio bus.\n");
 		goto err_register;
@@ -935,6 +925,8 @@ static int xemaclite_open(struct net_device *dev)
 	xemaclite_disable_interrupts(lp);
 
 	if (lp->phy_node) {
+		u32 bmcr;
+
 		lp->phy_dev = of_phy_connect(lp->ndev, lp->phy_node,
 					     xemaclite_adjust_link, 0,
 					     PHY_INTERFACE_MODE_MII);
@@ -945,6 +937,19 @@ static int xemaclite_open(struct net_device *dev)
 
 		/* EmacLite doesn't support giga-bit speeds */
 		phy_set_max_speed(lp->phy_dev, SPEED_100);
+
+		/* Don't advertise 1000BASE-T Full/Half duplex speeds */
+		phy_write(lp->phy_dev, MII_CTRL1000, 0);
+
+		/* Advertise only 10 and 100mbps full/half duplex speeds */
+		phy_write(lp->phy_dev, MII_ADVERTISE, ADVERTISE_ALL |
+			  ADVERTISE_CSMA);
+
+		/* Restart auto negotiation */
+		bmcr = phy_read(lp->phy_dev, MII_BMCR);
+		bmcr |= (BMCR_ANENABLE | BMCR_ANRESTART);
+		phy_write(lp->phy_dev, MII_BMCR, bmcr);
+
 		phy_start(lp->phy_dev);
 	}
 
@@ -1152,7 +1157,7 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	lp->tx_ping_pong = get_bool(ofdev, "xlnx,tx-ping-pong");
 	lp->rx_ping_pong = get_bool(ofdev, "xlnx,rx-ping-pong");
 
-	rc = of_get_ethdev_address(ofdev->dev.of_node, ndev);
+	rc = of_get_mac_address(ofdev->dev.of_node, ndev->dev_addr);
 	if (rc) {
 		dev_warn(dev, "No MAC address found, using random\n");
 		eth_hw_addr_random(ndev);
@@ -1180,7 +1185,7 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	if (rc) {
 		dev_err(dev,
 			"Cannot register network device, aborting\n");
-		goto put_node;
+		goto error;
 	}
 
 	dev_info(dev,
@@ -1188,8 +1193,6 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 		 (unsigned long __force)ndev->mem_start, lp->base_addr, ndev->irq);
 	return 0;
 
-put_node:
-	of_node_put(lp->phy_node);
 error:
 	free_netdev(ndev);
 	return rc;

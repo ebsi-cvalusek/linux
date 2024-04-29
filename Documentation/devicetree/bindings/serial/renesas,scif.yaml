@@ -79,7 +79,7 @@ properties:
           - description: Error interrupt
           - description: Receive buffer full interrupt
           - description: Transmit buffer empty interrupt
-          - description: Break interrupt
+          - description: Transmit End interrupt
       - items:
           - description: Error interrupt
           - description: Receive buffer full interrupt
@@ -94,7 +94,7 @@ properties:
           - const: eri
           - const: rxi
           - const: txi
-          - const: bri
+          - const: tei
       - items:
           - const: eri
           - const: rxi

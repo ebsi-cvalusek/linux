@@ -131,11 +131,8 @@ static int um_pci_send_cmd(struct um_pci_device *dev,
 				out ? 1 : 0,
 				posted ? cmd : HANDLE_NO_FREE(cmd),
 				GFP_ATOMIC);
-	if (ret) {
-		if (posted)
-			kfree(cmd);
+	if (ret)
 		goto out;
-	}
 
 	if (posted) {
 		virtqueue_kick(dev->cmd_vq);
@@ -184,15 +181,15 @@ static unsigned long um_pci_cfgspace_read(void *priv, unsigned int offset,
 	/* buf->data is maximum size - we may only use parts of it */
 	struct um_pci_message_buffer *buf;
 	u8 *data;
-	unsigned long ret = ULONG_MAX;
+	unsigned long ret = ~0ULL;
 
 	if (!dev)
-		return ULONG_MAX;
+		return ~0ULL;
 
 	buf = get_cpu_var(um_pci_msg_bufs);
 	data = buf->data;
 
-	memset(buf->data, 0xff, sizeof(buf->data));
+	memset(data, 0xff, sizeof(data));
 
 	switch (size) {
 	case 1:
@@ -307,7 +304,7 @@ static unsigned long um_pci_bar_read(void *priv, unsigned int offset,
 	/* buf->data is maximum size - we may only use parts of it */
 	struct um_pci_message_buffer *buf;
 	u8 *data;
-	unsigned long ret = ULONG_MAX;
+	unsigned long ret = ~0ULL;
 
 	buf = get_cpu_var(um_pci_msg_bufs);
 	data = buf->data;
@@ -618,33 +615,22 @@ static void um_pci_virtio_remove(struct virtio_device *vdev)
 	struct um_pci_device *dev = vdev->priv;
 	int i;
 
+        /* Stop all virtqueues */
+        vdev->config->reset(vdev);
+        vdev->config->del_vqs(vdev);
+
 	device_set_wakeup_enable(&vdev->dev, false);
 
 	mutex_lock(&um_pci_mtx);
 	for (i = 0; i < MAX_DEVICES; i++) {
 		if (um_pci_devices[i].dev != dev)
 			continue;
-
 		um_pci_devices[i].dev = NULL;
 		irq_free_desc(dev->irq);
-
-		break;
 	}
 	mutex_unlock(&um_pci_mtx);
 
-	if (i < MAX_DEVICES) {
-		struct pci_dev *pci_dev;
-
-		pci_dev = pci_get_slot(bridge->bus, i);
-		if (pci_dev)
-			pci_stop_and_remove_bus_device_locked(pci_dev);
-	}
-
-	/* Stop all virtqueues */
-	virtio_reset_device(vdev);
-	dev->cmd_vq = NULL;
-	dev->irq_vq = NULL;
-	vdev->config->del_vqs(vdev);
+	um_pci_rescan();
 
 	kfree(dev);
 }

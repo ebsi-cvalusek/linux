@@ -115,11 +115,6 @@ int uvc_query_ctrl(struct uvc_device *dev, u8 query, u8 unit,
 	case 5: /* Invalid unit */
 	case 6: /* Invalid control */
 	case 7: /* Invalid Request */
-		/*
-		 * The firmware has not properly implemented
-		 * the control or there has been a HW error.
-		 */
-		return -EIO;
 	case 8: /* Invalid value within range */
 		return -EINVAL;
 	default: /* reserved or unknown */
@@ -1334,9 +1329,7 @@ static void uvc_video_decode_meta(struct uvc_streaming *stream,
 	if (has_scr)
 		memcpy(stream->clock.last_scr, scr, 6);
 
-	meta->length = mem[0];
-	meta->flags  = mem[1];
-	memcpy(meta->buf, &mem[2], length - 2);
+	memcpy(&meta->length, mem, length);
 	meta_buf->bytesused += length + sizeof(meta->ns) + sizeof(meta->sof);
 
 	uvc_dbg(stream->dev, FRAME,
@@ -1953,17 +1946,6 @@ static int uvc_video_start_transfer(struct uvc_streaming *stream,
 			"Selecting alternate setting %u (%u B/frame bandwidth)\n",
 			altsetting, best_psize);
 
-		/*
-		 * Some devices, namely the Logitech C910 and B910, are unable
-		 * to recover from a USB autosuspend, unless the alternate
-		 * setting of the streaming interface is toggled.
-		 */
-		if (stream->dev->quirks & UVC_QUIRK_WAKE_AUTOSUSPEND) {
-			usb_set_interface(stream->dev->udev, intfnum,
-					  altsetting);
-			usb_set_interface(stream->dev->udev, intfnum, 0);
-		}
-
 		ret = usb_set_interface(stream->dev->udev, intfnum, altsetting);
 		if (ret < 0)
 			return ret;
@@ -1974,10 +1956,6 @@ static int uvc_video_start_transfer(struct uvc_streaming *stream,
 		ep = uvc_find_endpoint(&intf->altsetting[0],
 				stream->header.bEndpointAddress);
 		if (ep == NULL)
-			return -EIO;
-
-		/* Reject broken descriptors. */
-		if (usb_endpoint_maxp(&ep->desc) == 0)
 			return -EIO;
 
 		ret = uvc_init_video_bulk(stream, ep, gfp_flags);

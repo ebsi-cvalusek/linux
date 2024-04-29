@@ -1868,7 +1868,7 @@ static int bnxt_tc_setup_indr_block_cb(enum tc_setup_type type,
 	struct flow_cls_offload *flower = type_data;
 	struct bnxt *bp = priv->bp;
 
-	if (!tc_cls_can_offload_and_chain0(bp->dev, type_data))
+	if (flower->common.chain_index)
 		return -EOPNOTSUPP;
 
 	switch (type) {
@@ -2075,7 +2075,6 @@ destroy_flow_table:
 	rhashtable_destroy(&tc_info->flow_table);
 free_tc_info:
 	kfree(tc_info);
-	bp->tc_info = NULL;
 	return rc;
 }
 

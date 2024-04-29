@@ -10,7 +10,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/types.h>
 
 #define INTERRUPT_CNT_NAME "interrupt-cnt"
 
@@ -34,23 +33,30 @@ static irqreturn_t interrupt_cnt_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int interrupt_cnt_enable_read(struct counter_device *counter,
-				     struct counter_count *count, u8 *enable)
+static ssize_t interrupt_cnt_enable_read(struct counter_device *counter,
+					 struct counter_count *count,
+					 void *private, char *buf)
 {
 	struct interrupt_cnt_priv *priv = counter->priv;
 
-	*enable = priv->enabled;
-
-	return 0;
+	return sysfs_emit(buf, "%d\n", priv->enabled);
 }
 
-static int interrupt_cnt_enable_write(struct counter_device *counter,
-				      struct counter_count *count, u8 enable)
+static ssize_t interrupt_cnt_enable_write(struct counter_device *counter,
+					  struct counter_count *count,
+					  void *private, const char *buf,
+					  size_t len)
 {
 	struct interrupt_cnt_priv *priv = counter->priv;
+	bool enable;
+	ssize_t ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
 
 	if (priv->enabled == enable)
-		return 0;
+		return len;
 
 	if (enable) {
 		priv->enabled = true;
@@ -60,30 +66,33 @@ static int interrupt_cnt_enable_write(struct counter_device *counter,
 		priv->enabled = false;
 	}
 
-	return 0;
+	return len;
 }
 
-static struct counter_comp interrupt_cnt_ext[] = {
-	COUNTER_COMP_ENABLE(interrupt_cnt_enable_read,
-			    interrupt_cnt_enable_write),
+static const struct counter_count_ext interrupt_cnt_ext[] = {
+	{
+		.name = "enable",
+		.read = interrupt_cnt_enable_read,
+		.write = interrupt_cnt_enable_write,
+	},
 };
 
 static const enum counter_synapse_action interrupt_cnt_synapse_actions[] = {
 	COUNTER_SYNAPSE_ACTION_RISING_EDGE,
 };
 
-static int interrupt_cnt_action_read(struct counter_device *counter,
-				     struct counter_count *count,
-				     struct counter_synapse *synapse,
-				     enum counter_synapse_action *action)
+static int interrupt_cnt_action_get(struct counter_device *counter,
+				    struct counter_count *count,
+				    struct counter_synapse *synapse,
+				    size_t *action)
 {
-	*action = COUNTER_SYNAPSE_ACTION_RISING_EDGE;
+	*action = 0;
 
 	return 0;
 }
 
 static int interrupt_cnt_read(struct counter_device *counter,
-			      struct counter_count *count, u64 *val)
+			      struct counter_count *count, unsigned long *val)
 {
 	struct interrupt_cnt_priv *priv = counter->priv;
 
@@ -93,7 +102,8 @@ static int interrupt_cnt_read(struct counter_device *counter,
 }
 
 static int interrupt_cnt_write(struct counter_device *counter,
-			       struct counter_count *count, const u64 val)
+			       struct counter_count *count,
+			       const unsigned long val)
 {
 	struct interrupt_cnt_priv *priv = counter->priv;
 
@@ -109,11 +119,11 @@ static const enum counter_function interrupt_cnt_functions[] = {
 	COUNTER_FUNCTION_INCREASE,
 };
 
-static int interrupt_cnt_function_read(struct counter_device *counter,
-				       struct counter_count *count,
-				       enum counter_function *function)
+static int interrupt_cnt_function_get(struct counter_device *counter,
+				      struct counter_count *count,
+				      size_t *function)
 {
-	*function = COUNTER_FUNCTION_INCREASE;
+	*function = 0;
 
 	return 0;
 }
@@ -138,10 +148,10 @@ static int interrupt_cnt_signal_read(struct counter_device *counter,
 }
 
 static const struct counter_ops interrupt_cnt_ops = {
-	.action_read = interrupt_cnt_action_read,
+	.action_get = interrupt_cnt_action_get,
 	.count_read = interrupt_cnt_read,
 	.count_write = interrupt_cnt_write,
-	.function_read = interrupt_cnt_function_read,
+	.function_get = interrupt_cnt_function_get,
 	.signal_read  = interrupt_cnt_signal_read,
 };
 

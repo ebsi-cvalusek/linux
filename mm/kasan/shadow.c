@@ -493,7 +493,7 @@ void kasan_release_vmalloc(unsigned long start, unsigned long end,
 
 #else /* CONFIG_KASAN_VMALLOC */
 
-int kasan_module_alloc(void *addr, size_t size, gfp_t gfp_mask)
+int kasan_module_alloc(void *addr, size_t size)
 {
 	void *ret;
 	size_t scaled_size;
@@ -515,14 +515,9 @@ int kasan_module_alloc(void *addr, size_t size, gfp_t gfp_mask)
 			__builtin_return_address(0));
 
 	if (ret) {
-		struct vm_struct *vm = find_vm_area(addr);
 		__memset(ret, KASAN_SHADOW_INIT, shadow_size);
-		vm->flags |= VM_KASAN;
+		find_vm_area(addr)->flags |= VM_KASAN;
 		kmemleak_ignore(ret);
-
-		if (vm->flags & VM_DEFER_KMEMLEAK)
-			kmemleak_vmalloc(vm, size, gfp_mask);
-
 		return 0;
 	}
 

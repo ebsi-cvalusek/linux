@@ -4,7 +4,6 @@
 #define IRDMA_VERBS_H
 
 #define IRDMA_MAX_SAVED_PHY_PGADDR	4
-#define IRDMA_FLUSH_DELAY_MS		20
 
 #define IRDMA_PKEY_TBL_SZ		1
 #define IRDMA_DEFAULT_PKEY		0xFFFF
@@ -111,8 +110,6 @@ struct irdma_cq {
 	u16 cq_size;
 	u16 cq_num;
 	bool user_mode;
-	atomic_t armed;
-	enum irdma_cmpl_notify last_notify;
 	u32 polled_cmpls;
 	u32 cq_mem_size;
 	struct irdma_dma_mem kmem;
@@ -122,12 +119,6 @@ struct irdma_cq {
 	struct irdma_pbl *iwpbl_shadow;
 	struct list_head resize_list;
 	struct irdma_cq_poll_info cur_cqe;
-	struct list_head cmpl_generated;
-};
-
-struct irdma_cmpl_gen {
-	struct list_head list;
-	struct irdma_cq_poll_info cpi;
 };
 
 struct disconn_work {
@@ -168,7 +159,6 @@ struct irdma_qp {
 	refcount_t refcnt;
 	struct iw_cm_id *cm_id;
 	struct irdma_cm_node *cm_node;
-	struct delayed_work dwork_flush;
 	struct ib_mr *lsmm_mr;
 	atomic_t hw_mod_qp_pend;
 	enum ib_qp_state ibqp_state;
@@ -188,7 +178,6 @@ struct irdma_qp {
 	u8 flush_issued : 1;
 	u8 sig_all : 1;
 	u8 pau_mode : 1;
-	u8 suspend_pending : 1;
 	u8 rsvd : 1;
 	u8 iwarp_state;
 	u16 term_sq_flush_code;
@@ -233,7 +222,4 @@ int irdma_ib_register_device(struct irdma_device *iwdev);
 void irdma_ib_unregister_device(struct irdma_device *iwdev);
 void irdma_ib_dealloc_device(struct ib_device *ibdev);
 void irdma_ib_qp_event(struct irdma_qp *iwqp, enum irdma_qp_event_type event);
-void irdma_generate_flush_completions(struct irdma_qp *iwqp);
-void irdma_remove_cmpls_list(struct irdma_cq *iwcq);
-int irdma_generated_cmpls(struct irdma_cq *iwcq, struct irdma_cq_poll_info *cq_poll_info);
 #endif /* IRDMA_VERBS_H */

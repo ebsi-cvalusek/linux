@@ -43,6 +43,7 @@ static siphash_key_t syncookie_secret[2] __read_mostly;
  * requested/supported by the syn/synack exchange.
  */
 #define TSBITS	6
+#define TSMASK	(((__u32)1 << TSBITS) - 1)
 
 static u32 cookie_hash(__be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
 		       u32 count, int c)
@@ -63,9 +64,11 @@ static u32 cookie_hash(__be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
  */
 u64 cookie_init_timestamp(struct request_sock *req, u64 now)
 {
-	const struct inet_request_sock *ireq = inet_rsk(req);
-	u64 ts, ts_now = tcp_ns_to_ts(now);
+	struct inet_request_sock *ireq;
+	u32 ts, ts_now = tcp_ns_to_ts(now);
 	u32 options = 0;
+
+	ireq = inet_rsk(req);
 
 	options = ireq->wscale_ok ? ireq->snd_wscale : TS_OPT_WSCALE_MASK;
 	if (ireq->sack_ok)
@@ -73,12 +76,15 @@ u64 cookie_init_timestamp(struct request_sock *req, u64 now)
 	if (ireq->ecn_ok)
 		options |= TS_OPT_ECN;
 
-	ts = (ts_now >> TSBITS) << TSBITS;
+	ts = ts_now & ~TSMASK;
 	ts |= options;
-	if (ts > ts_now)
-		ts -= (1UL << TSBITS);
-
-	return ts * (NSEC_PER_SEC / TCP_TS_HZ);
+	if (ts > ts_now) {
+		ts >>= TSBITS;
+		ts--;
+		ts <<= TSBITS;
+		ts |= options;
+	}
+	return (u64)ts * (NSEC_PER_SEC / TCP_TS_HZ);
 }
 
 
@@ -243,12 +249,12 @@ bool cookie_timestamp_decode(const struct net *net,
 		return true;
 	}
 
-	if (!READ_ONCE(net->ipv4.sysctl_tcp_timestamps))
+	if (!net->ipv4.sysctl_tcp_timestamps)
 		return false;
 
 	tcp_opt->sack_ok = (options & TS_OPT_SACK) ? TCP_SACK_SEEN : 0;
 
-	if (tcp_opt->sack_ok && !READ_ONCE(net->ipv4.sysctl_tcp_sack))
+	if (tcp_opt->sack_ok && !net->ipv4.sysctl_tcp_sack)
 		return false;
 
 	if ((options & TS_OPT_WSCALE_MASK) == TS_OPT_WSCALE_MASK)
@@ -257,7 +263,7 @@ bool cookie_timestamp_decode(const struct net *net,
 	tcp_opt->wscale_ok = 1;
 	tcp_opt->snd_wscale = options & TS_OPT_WSCALE_MASK;
 
-	return READ_ONCE(net->ipv4.sysctl_tcp_window_scaling) != 0;
+	return net->ipv4.sysctl_tcp_window_scaling != 0;
 }
 EXPORT_SYMBOL(cookie_timestamp_decode);
 
@@ -269,7 +275,7 @@ bool cookie_ecn_ok(const struct tcp_options_received *tcp_opt,
 	if (!ecn_ok)
 		return false;
 
-	if (READ_ONCE(net->ipv4.sysctl_tcp_ecn))
+	if (net->ipv4.sysctl_tcp_ecn)
 		return true;
 
 	return dst_feature(dst, RTAX_FEATURE_ECN);
@@ -277,26 +283,22 @@ bool cookie_ecn_ok(const struct tcp_options_received *tcp_opt,
 EXPORT_SYMBOL(cookie_ecn_ok);
 
 struct request_sock *cookie_tcp_reqsk_alloc(const struct request_sock_ops *ops,
-					    const struct tcp_request_sock_ops *af_ops,
 					    struct sock *sk,
 					    struct sk_buff *skb)
 {
 	struct tcp_request_sock *treq;
 	struct request_sock *req;
 
+#ifdef CONFIG_MPTCP
 	if (sk_is_mptcp(sk))
-		req = mptcp_subflow_reqsk_alloc(ops, sk, false);
-	else
-		req = inet_reqsk_alloc(ops, sk, false);
+		ops = &mptcp_subflow_request_sock_ops;
+#endif
 
+	req = inet_reqsk_alloc(ops, sk, false);
 	if (!req)
 		return NULL;
 
 	treq = tcp_rsk(req);
-
-	/* treq->af_specific might be used to perform TCP_MD5 lookup */
-	treq->af_specific = af_ops;
-
 	treq->syn_tos = TCP_SKB_CB(skb)->ip_dsfield;
 #if IS_ENABLED(CONFIG_MPTCP)
 	treq->is_mptcp = sk_is_mptcp(sk);
@@ -335,8 +337,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	struct flowi4 fl4;
 	u32 tsoff = 0;
 
-	if (!READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_syncookies) ||
-	    !th->ack || th->rst)
+	if (!sock_net(sk)->ipv4.sysctl_tcp_syncookies || !th->ack || th->rst)
 		goto out;
 
 	if (tcp_synq_no_recent_overflow(sk))
@@ -365,8 +366,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 		goto out;
 
 	ret = NULL;
-	req = cookie_tcp_reqsk_alloc(&tcp_request_sock_ops,
-				     &tcp_request_sock_ipv4_ops, sk, skb);
+	req = cookie_tcp_reqsk_alloc(&tcp_request_sock_ops, sk, skb);
 	if (!req)
 		goto out;
 

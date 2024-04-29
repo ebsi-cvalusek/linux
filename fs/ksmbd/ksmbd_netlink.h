@@ -74,7 +74,6 @@ struct ksmbd_heartbeat {
 #define KSMBD_GLOBAL_FLAG_SMB2_LEASES		BIT(0)
 #define KSMBD_GLOBAL_FLAG_SMB2_ENCRYPTION	BIT(1)
 #define KSMBD_GLOBAL_FLAG_SMB3_MULTICHANNEL	BIT(2)
-#define KSMBD_GLOBAL_FLAG_SMB2_ENCRYPTION_OFF	BIT(3)
 
 /*
  * IPC request for ksmbd server startup
@@ -104,10 +103,6 @@ struct ksmbd_startup_request {
 					 * we set the SPARSE_FILES bit (0x40).
 					 */
 	__u32	sub_auth[3];		/* Subauth value for Security ID */
-	__u32	smb2_max_credits;	/* MAX credits */
-	__u32	smbd_max_io_size;	/* smbd read write size */
-	__u32	max_connections;	/* Number of maximum simultaneous connections */
-	__u32	reserved[126];		/* Reserved room */
 	__u32	ifc_list_sz;		/* interfaces list size */
 	__s8	____payload[];
 };
@@ -118,7 +113,7 @@ struct ksmbd_startup_request {
  * IPC request to shutdown ksmbd server.
  */
 struct ksmbd_shutdown_request {
-	__s32	reserved[16];
+	__s32	reserved;
 };
 
 /*
@@ -127,7 +122,6 @@ struct ksmbd_shutdown_request {
 struct ksmbd_login_request {
 	__u32	handle;
 	__s8	account[KSMBD_REQ_MAX_ACCOUNT_NAME_SZ]; /* user account name */
-	__u32	reserved[16];				/* Reserved room */
 };
 
 /*
@@ -141,7 +135,6 @@ struct ksmbd_login_response {
 	__u16	status;
 	__u16	hash_sz;			/* hash size */
 	__s8	hash[KSMBD_REQ_MAX_HASH_SZ];	/* password hash */
-	__u32	reserved[16];			/* Reserved room */
 };
 
 /*
@@ -150,7 +143,6 @@ struct ksmbd_login_response {
 struct ksmbd_share_config_request {
 	__u32	handle;
 	__s8	share_name[KSMBD_REQ_MAX_SHARE_NAME]; /* share name */
-	__u32	reserved[16];		/* Reserved room */
 };
 
 /*
@@ -165,8 +157,6 @@ struct ksmbd_share_config_response {
 	__u16	force_directory_mode;
 	__u16	force_uid;
 	__u16	force_gid;
-	__s8	share_name[KSMBD_REQ_MAX_SHARE_NAME];
-	__u32	reserved[112];		/* Reserved room */
 	__u32	veto_list_sz;
 	__s8	____payload[];
 };
@@ -197,7 +187,6 @@ struct ksmbd_tree_connect_request {
 	__s8	account[KSMBD_REQ_MAX_ACCOUNT_NAME_SZ];
 	__s8	share[KSMBD_REQ_MAX_SHARE_NAME];
 	__s8	peer_addr[64];
-	__u32	reserved[16];		/* Reserved room */
 };
 
 /*
@@ -207,7 +196,6 @@ struct ksmbd_tree_connect_response {
 	__u32	handle;
 	__u16	status;
 	__u16	connection_flags;
-	__u32	reserved[16];		/* Reserved room */
 };
 
 /*
@@ -216,7 +204,6 @@ struct ksmbd_tree_connect_response {
 struct ksmbd_tree_disconnect_request {
 	__u64	session_id;	/* session id */
 	__u64	connect_id;	/* tree connection id */
-	__u32	reserved[16];	/* Reserved room */
 };
 
 /*
@@ -225,7 +212,6 @@ struct ksmbd_tree_disconnect_request {
 struct ksmbd_logout_request {
 	__s8	account[KSMBD_REQ_MAX_ACCOUNT_NAME_SZ]; /* user account name */
 	__u32	account_flags;
-	__u32	reserved[16];				/* Reserved room */
 };
 
 /*
@@ -304,8 +290,7 @@ enum ksmbd_event {
 	KSMBD_EVENT_SPNEGO_AUTHEN_REQUEST,
 	KSMBD_EVENT_SPNEGO_AUTHEN_RESPONSE	= 15,
 
-	__KSMBD_EVENT_MAX,
-	KSMBD_EVENT_MAX = __KSMBD_EVENT_MAX - 1
+	KSMBD_EVENT_MAX
 };
 
 /*
@@ -353,8 +338,6 @@ enum KSMBD_TREE_CONN_STATUS {
 #define KSMBD_SHARE_FLAG_STREAMS		BIT(11)
 #define KSMBD_SHARE_FLAG_FOLLOW_SYMLINKS	BIT(12)
 #define KSMBD_SHARE_FLAG_ACL_XATTR		BIT(13)
-#define KSMBD_SHARE_FLAG_UPDATE			BIT(14)
-#define KSMBD_SHARE_FLAG_CROSSMNT		BIT(15)
 
 /*
  * Tree connect request flags.
@@ -370,7 +353,6 @@ enum KSMBD_TREE_CONN_STATUS {
 #define KSMBD_TREE_CONN_FLAG_READ_ONLY		BIT(1)
 #define KSMBD_TREE_CONN_FLAG_WRITABLE		BIT(2)
 #define KSMBD_TREE_CONN_FLAG_ADMIN_ACCOUNT	BIT(3)
-#define KSMBD_TREE_CONN_FLAG_UPDATE		BIT(4)
 
 /*
  * RPC over IPC.

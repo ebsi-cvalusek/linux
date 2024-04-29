@@ -167,8 +167,6 @@ struct capsule_info {
 	size_t			page_bytes_remain;
 };
 
-int efi_capsule_setup_info(struct capsule_info *cap_info, void *kbuff,
-                           size_t hdr_bytes);
 int __efi_capsule_setup_info(struct capsule_info *cap_info);
 
 /*
@@ -1114,6 +1112,8 @@ void efi_check_for_embedded_firmwares(void);
 static inline void efi_check_for_embedded_firmwares(void) { }
 #endif
 
+efi_status_t efi_random_get_seed(void);
+
 /*
  * Arch code can implement the following three template macros, avoiding
  * reptition for the void/non-void return cases of {__,}efi_call_virt():
@@ -1163,7 +1163,7 @@ static inline void efi_check_for_embedded_firmwares(void) { }
 	arch_efi_call_virt_teardown();					\
 })
 
-#define EFI_RANDOM_SEED_SIZE		32U // BLAKE2S_HASH_SIZE
+#define EFI_RANDOM_SEED_SIZE		64U
 
 struct linux_efi_random_seed {
 	u32	size;
@@ -1280,12 +1280,6 @@ static inline struct efi_mokvar_table_entry *efi_mokvar_entry_find(
 {
 	return NULL;
 }
-#endif
-
-#ifdef CONFIG_SYSFB
-extern void efifb_setup_from_dmi(struct screen_info *si, const char *opt);
-#else
-static inline void efifb_setup_from_dmi(struct screen_info *si, const char *opt) { }
 #endif
 
 #endif /* _LINUX_EFI_H */

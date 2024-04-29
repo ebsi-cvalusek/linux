@@ -1131,14 +1131,17 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 		local->scan_ies_len +=
 			2 + sizeof(struct ieee80211_vht_cap);
 
+	/* HE cap element is variable in size - set len to allow max size */
 	/*
-	 * HE cap element is variable in size - set len to allow max size */
-	if (supp_he) {
+	 * TODO: 1 is added at the end of the calculation to accommodate for
+	 *	the temporary placing of the HE capabilities IE under EXT.
+	 *	Remove it once it is placed in the final place.
+	 */
+	if (supp_he)
 		local->scan_ies_len +=
-			3 + sizeof(struct ieee80211_he_cap_elem) +
+			2 + sizeof(struct ieee80211_he_cap_elem) +
 			sizeof(struct ieee80211_he_mcs_nss_supp) +
-			IEEE80211_HE_PPE_THRES_MAX_LEN;
-	}
+			IEEE80211_HE_PPE_THRES_MAX_LEN + 1;
 
 	if (!local->ops->hw_scan) {
 		/* For hw_scan, driver needs to set these up. */
@@ -1357,10 +1360,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	ieee80211_led_exit(local);
 	destroy_workqueue(local->workqueue);
  fail_workqueue:
-	if (local->wiphy_ciphers_allocated) {
+	if (local->wiphy_ciphers_allocated)
 		kfree(local->hw.wiphy->cipher_suites);
-		local->wiphy_ciphers_allocated = false;
-	}
 	kfree(local->int_scan_req);
 	return result;
 }
@@ -1428,10 +1429,8 @@ void ieee80211_free_hw(struct ieee80211_hw *hw)
 	mutex_destroy(&local->iflist_mtx);
 	mutex_destroy(&local->mtx);
 
-	if (local->wiphy_ciphers_allocated) {
+	if (local->wiphy_ciphers_allocated)
 		kfree(local->hw.wiphy->cipher_suites);
-		local->wiphy_ciphers_allocated = false;
-	}
 
 	idr_for_each(&local->ack_status_frames,
 		     ieee80211_free_ack_frame, NULL);

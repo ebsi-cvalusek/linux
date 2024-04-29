@@ -179,7 +179,7 @@ static int trace_event_printer(enum binary_printer_ops op,
 		break;
 	case BINARY_PRINT_CHAR_DATA:
 		printed += color_fprintf(fp, color, "%c",
-			      isprint(ch) && isascii(ch) ? ch : '.');
+			      isprint(ch) ? ch : '.');
 		break;
 	case BINARY_PRINT_CHAR_PAD:
 		printed += color_fprintf(fp, color, " ");
@@ -240,10 +240,6 @@ int perf_quiet_option(void)
 		*opt->value_ptr = -1;
 		opt++;
 	}
-
-	/* For debug variables that are used as bool types, set to 0. */
-	redirect_to_stderr = 0;
-	debug_peo_args = 0;
 
 	return 0;
 }

@@ -166,7 +166,7 @@ static void pciehp_check_presence(struct controller *ctrl)
 {
 	int occupied;
 
-	down_read_nested(&ctrl->reset_lock, ctrl->depth);
+	down_read(&ctrl->reset_lock);
 	mutex_lock(&ctrl->state_lock);
 
 	occupied = pciehp_card_present_or_link_active(ctrl);
@@ -351,8 +351,6 @@ static struct pcie_port_service_driver hpdriver_portdrv = {
 	.runtime_suspend = pciehp_runtime_suspend,
 	.runtime_resume	= pciehp_runtime_resume,
 #endif	/* PM */
-
-	.slot_reset	= pciehp_slot_reset,
 };
 
 int __init pcie_hp_init(void)

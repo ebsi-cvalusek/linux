@@ -1040,10 +1040,9 @@ static int do_replace_finish(struct net *net, struct ebt_replace *repl,
 		goto free_iterate;
 	}
 
-	if (repl->valid_hooks != t->valid_hooks) {
-		ret = -EINVAL;
+	/* the table doesn't like it */
+	if (t->check && (ret = t->check(newinfo, repl->valid_hooks)))
 		goto free_unlock;
-	}
 
 	if (repl->num_counters && repl->num_counters != t->private->nentries) {
 		ret = -EINVAL;
@@ -1090,7 +1089,7 @@ static int do_replace_finish(struct net *net, struct ebt_replace *repl,
 
 	audit_log_nfcfg(repl->name, AF_BRIDGE, repl->nentries,
 			AUDIT_XT_OP_REPLACE, GFP_KERNEL);
-	return 0;
+	return ret;
 
 free_unlock:
 	mutex_unlock(&ebt_mutex);
@@ -1231,6 +1230,11 @@ int ebt_register_table(struct net *net, const struct ebt_table *input_table,
 	ret = translate_table(net, repl->name, newinfo);
 	if (ret != 0)
 		goto free_chainstack;
+
+	if (table->check && table->check(newinfo, table->valid_hooks)) {
+		ret = -EINVAL;
+		goto free_chainstack;
+	}
 
 	table->private = newinfo;
 	rwlock_init(&table->lock);
@@ -2114,7 +2118,8 @@ static int size_entry_mwt(const struct ebt_entry *entry, const unsigned char *ba
 		return ret;
 
 	offsets[0] = sizeof(struct ebt_entry); /* matches come first */
-	memcpy(&offsets[1], &entry->offsets, sizeof(entry->offsets));
+	memcpy(&offsets[1], &entry->watchers_offset,
+			sizeof(offsets) - sizeof(offsets[0]));
 
 	if (state->buf_kern_start) {
 		buf_start = state->buf_kern_start + state->buf_kern_offset;

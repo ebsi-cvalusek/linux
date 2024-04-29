@@ -308,42 +308,38 @@
 			LITTLE_CPU_SLEEP_0: cpu-sleep-0-0 {
 				compatible = "arm,idle-state";
 				idle-state-name = "little-retention";
-				/* CPU Retention (C2D), L2 Active */
 				arm,psci-suspend-param = <0x00000002>;
 				entry-latency-us = <81>;
 				exit-latency-us = <86>;
-				min-residency-us = <504>;
+				min-residency-us = <200>;
 			};
 
 			LITTLE_CPU_SLEEP_1: cpu-sleep-0-1 {
 				compatible = "arm,idle-state";
 				idle-state-name = "little-power-collapse";
-				/* CPU + L2 Power Collapse (C3, D4) */
 				arm,psci-suspend-param = <0x40000003>;
-				entry-latency-us = <814>;
-				exit-latency-us = <4562>;
-				min-residency-us = <9183>;
+				entry-latency-us = <273>;
+				exit-latency-us = <612>;
+				min-residency-us = <1000>;
 				local-timer-stop;
 			};
 
 			BIG_CPU_SLEEP_0: cpu-sleep-1-0 {
 				compatible = "arm,idle-state";
 				idle-state-name = "big-retention";
-				/* CPU Retention (C2D), L2 Active */
 				arm,psci-suspend-param = <0x00000002>;
 				entry-latency-us = <79>;
 				exit-latency-us = <82>;
-				min-residency-us = <1302>;
+				min-residency-us = <200>;
 			};
 
 			BIG_CPU_SLEEP_1: cpu-sleep-1-1 {
 				compatible = "arm,idle-state";
 				idle-state-name = "big-power-collapse";
-				/* CPU + L2 Power Collapse (C3, D4) */
 				arm,psci-suspend-param = <0x40000003>;
-				entry-latency-us = <724>;
-				exit-latency-us = <2027>;
-				min-residency-us = <9419>;
+				entry-latency-us = <336>;
+				exit-latency-us = <525>;
+				min-residency-us = <1000>;
 				local-timer-stop;
 			};
 		};
@@ -861,7 +857,7 @@
 			reg = <0x00100000 0xb0000>;
 		};
 
-		rpm_msg_ram: sram@778000 {
+		rpm_msg_ram: memory@778000 {
 			compatible = "qcom,rpm-msg-ram";
 			reg = <0x00778000 0x7000>;
 		};
@@ -951,7 +947,7 @@
 			phy-names = "pciephy";
 			status = "disabled";
 
-			ranges = <0x01000000 0x0 0x00000000 0x1b200000 0x0 0x100000>,
+			ranges = <0x01000000 0x0 0x1b200000 0x1b200000 0x0 0x100000>,
 				 <0x02000000 0x0 0x1b300000 0x1b300000 0x0 0xd00000>;
 
 			#interrupt-cells = <1>;
@@ -994,7 +990,7 @@
 			vdda-phy-supply = <&vreg_l1a_0p875>;
 			vdda-pll-supply = <&vreg_l2a_1p2>;
 
-			pciephy: phy@1c06800 {
+			pciephy: lane@1c06800 {
 				reg = <0x01c06200 0x128>, <0x01c06400 0x1fc>, <0x01c06800 0x20c>;
 				#phy-cells = <0>;
 
@@ -1066,7 +1062,7 @@
 			reset-names = "ufsphy";
 			resets = <&ufshc 0>;
 
-			ufsphy_lanes: phy@1da7400 {
+			ufsphy_lanes: lanes@1da7400 {
 				reg = <0x01da7400 0x128>,
 				      <0x01da7600 0x1fc>,
 				      <0x01da7c00 0x1dc>,
@@ -1473,7 +1469,7 @@
 			compatible = "arm,coresight-stm", "arm,primecell";
 			reg = <0x06002000 0x1000>,
 			      <0x16280000 0x180000>;
-			reg-names = "stm-base", "stm-stimulus-base";
+			reg-names = "stm-base", "stm-data-base";
 			status = "disabled";
 
 			clocks = <&rpmcc RPM_SMD_QDSS_CLK>, <&rpmcc RPM_SMD_QDSS_A_CLK>;
@@ -1863,11 +1859,9 @@
 
 			cpu = <&CPU4>;
 
-			out-ports {
-				port{
-					etm4_out: endpoint {
-						remote-endpoint = <&apss_funnel_in4>;
-					};
+			port{
+				etm4_out: endpoint {
+					remote-endpoint = <&apss_funnel_in4>;
 				};
 			};
 		};
@@ -1882,11 +1876,9 @@
 
 			cpu = <&CPU5>;
 
-			out-ports {
-				port{
-					etm5_out: endpoint {
-						remote-endpoint = <&apss_funnel_in5>;
-					};
+			port{
+				etm5_out: endpoint {
+					remote-endpoint = <&apss_funnel_in5>;
 				};
 			};
 		};
@@ -1901,11 +1893,9 @@
 
 			cpu = <&CPU6>;
 
-			out-ports {
-				port{
-					etm6_out: endpoint {
-						remote-endpoint = <&apss_funnel_in6>;
-					};
+			port{
+				etm6_out: endpoint {
+					remote-endpoint = <&apss_funnel_in6>;
 				};
 			};
 		};
@@ -1920,11 +1910,9 @@
 
 			cpu = <&CPU7>;
 
-			out-ports {
-				port{
-					etm7_out: endpoint {
-						remote-endpoint = <&apss_funnel_in7>;
-					};
+			port{
+				etm7_out: endpoint {
+					remote-endpoint = <&apss_funnel_in7>;
 				};
 			};
 		};
@@ -2007,7 +1995,7 @@
 				 <&gcc GCC_USB3PHY_PHY_BCR>;
 			reset-names = "phy", "common";
 
-			usb1_ssphy: phy@c010200 {
+			usb1_ssphy: lane@c010200 {
 				reg = <0xc010200 0x128>,
 				      <0xc010400 0x200>,
 				      <0xc010c00 0x20c>,

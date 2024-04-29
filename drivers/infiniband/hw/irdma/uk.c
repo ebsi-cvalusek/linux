@@ -94,18 +94,16 @@ static enum irdma_status_code irdma_nop_1(struct irdma_qp_uk *qp)
  */
 void irdma_clr_wqes(struct irdma_qp_uk *qp, u32 qp_wqe_idx)
 {
-	struct irdma_qp_quanta *sq;
+	__le64 *wqe;
 	u32 wqe_idx;
 
 	if (!(qp_wqe_idx & 0x7F)) {
 		wqe_idx = (qp_wqe_idx + 128) % qp->sq_ring.size;
-		sq = qp->sq_base + wqe_idx;
+		wqe = qp->sq_base[wqe_idx].elem;
 		if (wqe_idx)
-			memset(sq, qp->swqe_polarity ? 0 : 0xFF,
-			       128 * sizeof(*sq));
+			memset(wqe, qp->swqe_polarity ? 0 : 0xFF, 0x1000);
 		else
-			memset(sq, qp->swqe_polarity ? 0xFF : 0,
-			       128 * sizeof(*sq));
+			memset(wqe, qp->swqe_polarity ? 0xFF : 0, 0x1000);
 	}
 }
 
@@ -503,8 +501,7 @@ enum irdma_status_code irdma_uk_send(struct irdma_qp_uk *qp,
 			      FIELD_PREP(IRDMAQPSQ_IMMDATA, info->imm_data));
 		i = 0;
 	} else {
-		qp->wqe_ops.iw_set_fragment(wqe, 0,
-					    frag_cnt ? op_info->sg_list : NULL,
+		qp->wqe_ops.iw_set_fragment(wqe, 0, op_info->sg_list,
 					    qp->swqe_polarity);
 		i = 1;
 	}
@@ -1071,7 +1068,6 @@ irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq, struct irdma_cq_poll_info *info)
 	enum irdma_status_code ret_code;
 	bool move_cq_head = true;
 	u8 polarity;
-	u8 op_type;
 	bool ext_valid;
 	__le64 *ext_cqe;
 
@@ -1254,6 +1250,7 @@ irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq, struct irdma_cq_poll_info *info)
 			do {
 				__le64 *sw_wqe;
 				u64 wqe_qword;
+				u8 op_type;
 				u32 tail;
 
 				tail = qp->sq_ring.tail;
@@ -1270,8 +1267,6 @@ irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq, struct irdma_cq_poll_info *info)
 					break;
 				}
 			} while (1);
-			if (op_type == IRDMA_OP_TYPE_BIND_MW && info->minor_err == FLUSH_PROT_ERR)
-				info->minor_err = FLUSH_MW_BIND_ERR;
 			qp->sq_flush_seen = true;
 			if (!IRDMA_RING_MORE_WORK(qp->sq_ring))
 				qp->sq_flush_complete = true;
@@ -1548,9 +1543,6 @@ void irdma_uk_clean_cq(void *q, struct irdma_cq_uk *cq)
 
 		if (polarity != temp)
 			break;
-
-		/* Ensure CQE contents are read after valid bit is checked */
-		dma_rmb();
 
 		get_64bit_val(cqe, 8, &comp_ctx);
 		if ((void *)(unsigned long)comp_ctx == q)

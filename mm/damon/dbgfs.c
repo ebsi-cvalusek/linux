@@ -32,7 +32,7 @@ static char *user_input_str(const char __user *buf, size_t count, loff_t *ppos)
 	if (*ppos)
 		return ERR_PTR(-EINVAL);
 
-	kbuf = kmalloc(count + 1, GFP_KERNEL | __GFP_NOWARN);
+	kbuf = kmalloc(count + 1, GFP_KERNEL);
 	if (!kbuf)
 		return ERR_PTR(-ENOMEM);
 
@@ -185,7 +185,6 @@ static ssize_t dbgfs_target_ids_write(struct file *file,
 		const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct damon_ctx *ctx = file->private_data;
-	struct damon_target *t, *next_t;
 	char *kbuf, *nrs;
 	unsigned long *targets;
 	ssize_t nr_targets;
@@ -225,13 +224,6 @@ static ssize_t dbgfs_target_ids_write(struct file *file,
 		goto unlock_out;
 	}
 
-	/* remove previously set targets */
-	damon_for_each_target_safe(t, next_t, ctx) {
-		if (targetid_is_pid(ctx))
-			put_pid((struct pid *)t->id);
-		damon_destroy_target(t);
-	}
-
 	err = damon_set_targets(ctx, targets, nr_targets);
 	if (err) {
 		if (targetid_is_pid(ctx))
@@ -255,7 +247,7 @@ static ssize_t dbgfs_kdamond_pid_read(struct file *file,
 	char *kbuf;
 	ssize_t len;
 
-	kbuf = kmalloc(count, GFP_KERNEL | __GFP_NOWARN);
+	kbuf = kmalloc(count, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
@@ -317,12 +309,10 @@ static int dbgfs_before_terminate(struct damon_ctx *ctx)
 	if (!targetid_is_pid(ctx))
 		return 0;
 
-	mutex_lock(&ctx->kdamond_lock);
 	damon_for_each_target_safe(t, next, ctx) {
 		put_pid((struct pid *)t->id);
 		damon_destroy_target(t);
 	}
-	mutex_unlock(&ctx->kdamond_lock);
 	return 0;
 }
 
@@ -376,9 +366,6 @@ static int dbgfs_mk_context(char *name)
 		return -ENOENT;
 
 	new_dir = debugfs_create_dir(name, root);
-	/* Below check is required for a potential duplicated name case */
-	if (IS_ERR(new_dir))
-		return PTR_ERR(new_dir);
 	dbgfs_dirs[dbgfs_nr_ctxs] = new_dir;
 
 	new_ctx = dbgfs_new_ctx();
@@ -441,10 +428,8 @@ out:
 static int dbgfs_rm_context(char *name)
 {
 	struct dentry *root, *dir, **new_dirs;
-	struct inode *inode;
 	struct damon_ctx **new_ctxs;
 	int i, j;
-	int ret = 0;
 
 	if (damon_nr_running_ctxs())
 		return -EBUSY;
@@ -457,24 +442,16 @@ static int dbgfs_rm_context(char *name)
 	if (!dir)
 		return -ENOENT;
 
-	inode = d_inode(dir);
-	if (!S_ISDIR(inode->i_mode)) {
-		ret = -EINVAL;
-		goto out_dput;
-	}
-
 	new_dirs = kmalloc_array(dbgfs_nr_ctxs - 1, sizeof(*dbgfs_dirs),
 			GFP_KERNEL);
-	if (!new_dirs) {
-		ret = -ENOMEM;
-		goto out_dput;
-	}
+	if (!new_dirs)
+		return -ENOMEM;
 
 	new_ctxs = kmalloc_array(dbgfs_nr_ctxs - 1, sizeof(*dbgfs_ctxs),
 			GFP_KERNEL);
 	if (!new_ctxs) {
-		ret = -ENOMEM;
-		goto out_new_dirs;
+		kfree(new_dirs);
+		return -ENOMEM;
 	}
 
 	for (i = 0, j = 0; i < dbgfs_nr_ctxs; i++) {
@@ -494,13 +471,7 @@ static int dbgfs_rm_context(char *name)
 	dbgfs_ctxs = new_ctxs;
 	dbgfs_nr_ctxs--;
 
-	goto out_dput;
-
-out_new_dirs:
-	kfree(new_dirs);
-out_dput:
-	dput(dir);
-	return ret;
+	return 0;
 }
 
 static ssize_t dbgfs_rm_context_write(struct file *file,
@@ -567,14 +538,12 @@ static ssize_t dbgfs_monitor_on_write(struct file *file,
 		return -EINVAL;
 	}
 
-	mutex_lock(&damon_dbgfs_lock);
 	if (!strncmp(kbuf, "on", count))
 		err = damon_start(dbgfs_ctxs, dbgfs_nr_ctxs);
 	else if (!strncmp(kbuf, "off", count))
 		err = damon_stop(dbgfs_ctxs, dbgfs_nr_ctxs);
 	else
 		err = -EINVAL;
-	mutex_unlock(&damon_dbgfs_lock);
 
 	if (err)
 		ret = err;
@@ -627,16 +596,15 @@ static int __init __damon_dbgfs_init(void)
 
 static int __init damon_dbgfs_init(void)
 {
-	int rc = -ENOMEM;
+	int rc;
 
-	mutex_lock(&damon_dbgfs_lock);
 	dbgfs_ctxs = kmalloc(sizeof(*dbgfs_ctxs), GFP_KERNEL);
 	if (!dbgfs_ctxs)
-		goto out;
+		return -ENOMEM;
 	dbgfs_ctxs[0] = dbgfs_new_ctx();
 	if (!dbgfs_ctxs[0]) {
 		kfree(dbgfs_ctxs);
-		goto out;
+		return -ENOMEM;
 	}
 	dbgfs_nr_ctxs = 1;
 
@@ -647,8 +615,6 @@ static int __init damon_dbgfs_init(void)
 		pr_err("%s: dbgfs init failed\n", __func__);
 	}
 
-out:
-	mutex_unlock(&damon_dbgfs_lock);
 	return rc;
 }
 

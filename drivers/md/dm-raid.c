@@ -1001,13 +1001,12 @@ static int validate_region_size(struct raid_set *rs, unsigned long region_size)
 static int validate_raid_redundancy(struct raid_set *rs)
 {
 	unsigned int i, rebuild_cnt = 0;
-	unsigned int rebuilds_per_group = 0, copies, raid_disks;
+	unsigned int rebuilds_per_group = 0, copies;
 	unsigned int group_size, last_group_start;
 
-	for (i = 0; i < rs->raid_disks; i++)
-		if (!test_bit(FirstUse, &rs->dev[i].rdev.flags) &&
-		    ((!test_bit(In_sync, &rs->dev[i].rdev.flags) ||
-		      !rs->dev[i].rdev.sb_page)))
+	for (i = 0; i < rs->md.raid_disks; i++)
+		if (!test_bit(In_sync, &rs->dev[i].rdev.flags) ||
+		    !rs->dev[i].rdev.sb_page)
 			rebuild_cnt++;
 
 	switch (rs->md.level) {
@@ -1047,9 +1046,8 @@ static int validate_raid_redundancy(struct raid_set *rs)
 		 *	    A	 A    B	   B	C
 		 *	    C	 D    D	   E	E
 		 */
-		raid_disks = min(rs->raid_disks, rs->md.raid_disks);
 		if (__is_raid10_near(rs->md.new_layout)) {
-			for (i = 0; i < raid_disks; i++) {
+			for (i = 0; i < rs->md.raid_disks; i++) {
 				if (!(i % copies))
 					rebuilds_per_group = 0;
 				if ((!rs->dev[i].rdev.sb_page ||
@@ -1072,10 +1070,10 @@ static int validate_raid_redundancy(struct raid_set *rs)
 		 * results in the need to treat the last (potentially larger)
 		 * set differently.
 		 */
-		group_size = (raid_disks / copies);
-		last_group_start = (raid_disks / group_size) - 1;
+		group_size = (rs->md.raid_disks / copies);
+		last_group_start = (rs->md.raid_disks / group_size) - 1;
 		last_group_start *= group_size;
-		for (i = 0; i < raid_disks; i++) {
+		for (i = 0; i < rs->md.raid_disks; i++) {
 			if (!(i % copies) && !(i > last_group_start))
 				rebuilds_per_group = 0;
 			if ((!rs->dev[i].rdev.sb_page ||
@@ -1590,7 +1588,7 @@ static sector_t __rdev_sectors(struct raid_set *rs)
 {
 	int i;
 
-	for (i = 0; i < rs->raid_disks; i++) {
+	for (i = 0; i < rs->md.raid_disks; i++) {
 		struct md_rdev *rdev = &rs->dev[i].rdev;
 
 		if (!test_bit(Journal, &rdev->flags) &&
@@ -3258,7 +3256,8 @@ size_check:
 	r = md_start(&rs->md);
 	if (r) {
 		ti->error = "Failed to start raid array";
-		goto bad_unlock;
+		mddev_unlock(&rs->md);
+		goto bad_md_start;
 	}
 
 	/* If raid4/5/6 journal mode explicitly requested (only possible with journal dev) -> set it */
@@ -3266,7 +3265,8 @@ size_check:
 		r = r5c_journal_mode_set(&rs->md, rs->journal_dev.mode);
 		if (r) {
 			ti->error = "Failed to set raid4/5/6 journal mode";
-			goto bad_unlock;
+			mddev_unlock(&rs->md);
+			goto bad_journal_mode_set;
 		}
 	}
 
@@ -3277,14 +3277,14 @@ size_check:
 	if (rs_is_raid456(rs)) {
 		r = rs_set_raid456_stripe_cache(rs);
 		if (r)
-			goto bad_unlock;
+			goto bad_stripe_cache;
 	}
 
 	/* Now do an early reshape check */
 	if (test_bit(RT_FLAG_RESHAPE_RS, &rs->runtime_flags)) {
 		r = rs_check_reshape(rs);
 		if (r)
-			goto bad_unlock;
+			goto bad_check_reshape;
 
 		/* Restore new, ctr requested layout to perform check */
 		rs_config_restore(rs, &rs_layout);
@@ -3293,7 +3293,7 @@ size_check:
 			r = rs->md.pers->check_reshape(&rs->md);
 			if (r) {
 				ti->error = "Reshape check failed";
-				goto bad_unlock;
+				goto bad_check_reshape;
 			}
 		}
 	}
@@ -3304,9 +3304,11 @@ size_check:
 	mddev_unlock(&rs->md);
 	return 0;
 
-bad_unlock:
+bad_md_start:
+bad_journal_mode_set:
+bad_stripe_cache:
+bad_check_reshape:
 	md_stop(&rs->md);
-	mddev_unlock(&rs->md);
 bad:
 	raid_set_free(rs);
 
@@ -3317,9 +3319,7 @@ static void raid_dtr(struct dm_target *ti)
 {
 	struct raid_set *rs = ti->private;
 
-	mddev_lock_nointr(&rs->md);
 	md_stop(&rs->md);
-	mddev_unlock(&rs->md);
 	raid_set_free(rs);
 }
 
@@ -3329,14 +3329,14 @@ static int raid_map(struct dm_target *ti, struct bio *bio)
 	struct mddev *mddev = &rs->md;
 
 	/*
-	 * If we're reshaping to add disk(s), ti->len and
+	 * If we're reshaping to add disk(s)), ti->len and
 	 * mddev->array_sectors will differ during the process
 	 * (ti->len > mddev->array_sectors), so we have to requeue
 	 * bios with addresses > mddev->array_sectors here or
 	 * there will occur accesses past EOD of the component
 	 * data images thus erroring the raid set.
 	 */
-	if (unlikely(bio_has_data(bio) && bio_end_sector(bio) > mddev->array_sectors))
+	if (unlikely(bio_end_sector(bio) > mddev->array_sectors))
 		return DM_MAPIO_REQUEUE;
 
 	md_handle_request(mddev, bio);
@@ -3512,7 +3512,7 @@ static void raid_status(struct dm_target *ti, status_type_t type,
 {
 	struct raid_set *rs = ti->private;
 	struct mddev *mddev = &rs->md;
-	struct r5conf *conf = rs_is_raid456(rs) ? mddev->private : NULL;
+	struct r5conf *conf = mddev->private;
 	int i, max_nr_stripes = conf ? conf->max_nr_stripes : 0;
 	unsigned long recovery;
 	unsigned int raid_param_cnt = 1; /* at least 1 for chunksize */
@@ -3771,13 +3771,13 @@ static int raid_iterate_devices(struct dm_target *ti,
 	unsigned int i;
 	int r = 0;
 
-	for (i = 0; !r && i < rs->raid_disks; i++) {
-		if (rs->dev[i].data_dev) {
-			r = fn(ti, rs->dev[i].data_dev,
-			       0, /* No offset on data devs */
-			       rs->md.dev_sectors, data);
-		}
-	}
+	for (i = 0; !r && i < rs->md.raid_disks; i++)
+		if (rs->dev[i].data_dev)
+			r = fn(ti,
+				 rs->dev[i].data_dev,
+				 0, /* No offset on data devs */
+				 rs->md.dev_sectors,
+				 data);
 
 	return r;
 }
@@ -3822,7 +3822,7 @@ static void attempt_restore_of_faulty_devices(struct raid_set *rs)
 
 	memset(cleared_failed_devices, 0, sizeof(cleared_failed_devices));
 
-	for (i = 0; i < rs->raid_disks; i++) {
+	for (i = 0; i < mddev->raid_disks; i++) {
 		r = &rs->dev[i].rdev;
 		/* HM FIXME: enhance journal device recovery processing */
 		if (test_bit(Journal, &r->flags))

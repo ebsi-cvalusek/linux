@@ -31,7 +31,6 @@ struct config_entry {
 	u16 device;
 	u8 acpi_hid[ACPI_ID_LEN];
 	const struct dmi_system_id *dmi_table;
-	u8 codec_hid[ACPI_ID_LEN];
 };
 
 /*
@@ -57,7 +56,7 @@ static const struct config_entry config_table[] = {
 /*
  * Apollolake (Broxton-P)
  * the legacy HDAudio driver is used except on Up Squared (SOF) and
- * Chromebooks (SST), as well as devices based on the ES8336 codec
+ * Chromebooks (SST)
  */
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_APOLLOLAKE)
 	{
@@ -73,11 +72,6 @@ static const struct config_entry config_table[] = {
 			},
 			{}
 		}
-	},
-	{
-		.flags = FLAG_SOF,
-		.device = 0x5a98,
-		.codec_hid = "ESSX8336",
 	},
 #endif
 #if IS_ENABLED(CONFIG_SND_SOC_INTEL_APL)
@@ -143,7 +137,7 @@ static const struct config_entry config_table[] = {
 
 /*
  * Geminilake uses legacy HDAudio driver except for Google
- * Chromebooks and devices based on the ES8336 codec
+ * Chromebooks
  */
 /* Geminilake */
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_GEMINILAKE)
@@ -159,11 +153,6 @@ static const struct config_entry config_table[] = {
 			},
 			{}
 		}
-	},
-	{
-		.flags = FLAG_SOF,
-		.device = 0x3198,
-		.codec_hid = "ESSX8336",
 	},
 #endif
 
@@ -252,11 +241,6 @@ static const struct config_entry config_table[] = {
 		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
 		.device = 0x02c8,
 	},
-	{
-		.flags = FLAG_SOF,
-		.device = 0x02c8,
-		.codec_hid = "ESSX8336",
-	},
 /* Cometlake-H */
 	{
 		.flags = FLAG_SOF,
@@ -281,11 +265,6 @@ static const struct config_entry config_table[] = {
 		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
 		.device = 0x06c8,
 	},
-		{
-		.flags = FLAG_SOF,
-		.device = 0x06c8,
-		.codec_hid = "ESSX8336",
-	},
 #endif
 
 /* Icelake */
@@ -309,15 +288,6 @@ static const struct config_entry config_table[] = {
 	},
 #endif
 
-/* JasperLake */
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_JASPERLAKE)
-	{
-		.flags = FLAG_SOF,
-		.device = 0x4dc8,
-		.codec_hid = "ESSX8336",
-	},
-#endif
-
 /* Tigerlake */
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_TIGERLAKE)
 	{
@@ -330,12 +300,6 @@ static const struct config_entry config_table[] = {
 					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
 				}
 			},
-			{
-				.ident = "Google firmware",
-				.matches = {
-					DMI_MATCH(DMI_BIOS_VERSION, "Google"),
-				}
-			},
 			{}
 		}
 	},
@@ -346,11 +310,6 @@ static const struct config_entry config_table[] = {
 	{
 		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
 		.device = 0x43c8,
-	},
-	{
-		.flags = FLAG_SOF,
-		.device = 0xa0c8,
-		.codec_hid = "ESSX8336",
 	},
 #endif
 
@@ -382,33 +341,6 @@ static const struct config_entry config_table[] = {
 	},
 #endif
 
-/* Meteor Lake */
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_METEORLAKE)
-	/* Meteorlake-P */
-	{
-		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
-		.device = 0x7e28,
-	},
-	/* ArrowLake-S */
-	{
-		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
-		.device = PCI_DEVICE_ID_INTEL_HDA_ARL_S,
-	},
-	/* ArrowLake */
-	{
-		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
-		.device = PCI_DEVICE_ID_INTEL_HDA_ARL,
-	},
-#endif
-
-/* Lunar Lake */
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_LUNARLAKE)
-	/* Lunarlake-P */
-	{
-		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
-		.device = PCI_DEVICE_ID_INTEL_HDA_LNL_P,
-	},
-#endif
 };
 
 static const struct config_entry *snd_intel_dsp_find_config
@@ -421,8 +353,6 @@ static const struct config_entry *snd_intel_dsp_find_config
 		if (table->device != device)
 			continue;
 		if (table->dmi_table && !dmi_check_system(table->dmi_table))
-			continue;
-		if (table->codec_hid[0] && !acpi_dev_present(table->codec_hid, NULL, -1))
 			continue;
 		return table;
 	}

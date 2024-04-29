@@ -158,10 +158,8 @@ static int mtk_hci_wmt_sync(struct hci_dev *hdev,
 	int err;
 
 	hlen = sizeof(*hdr) + wmt_params->dlen;
-	if (hlen > 255) {
-		err = -EINVAL;
-		goto err_free_skb;
-	}
+	if (hlen > 255)
+		return -EINVAL;
 
 	hdr = (struct mtk_wmt_hdr *)&wc;
 	hdr->dir = 1;
@@ -175,7 +173,7 @@ static int mtk_hci_wmt_sync(struct hci_dev *hdev,
 	err = __hci_cmd_send(hdev, 0xfc6f, hlen, &wc);
 	if (err < 0) {
 		clear_bit(BTMTKUART_TX_WAIT_VND_EVT, &bdev->tx_state);
-		goto err_free_skb;
+		return err;
 	}
 
 	/* The vendor specific WMT commands are all answered by a vendor
@@ -192,14 +190,13 @@ static int mtk_hci_wmt_sync(struct hci_dev *hdev,
 	if (err == -EINTR) {
 		bt_dev_err(hdev, "Execution of wmt command interrupted");
 		clear_bit(BTMTKUART_TX_WAIT_VND_EVT, &bdev->tx_state);
-		goto err_free_skb;
+		return err;
 	}
 
 	if (err) {
 		bt_dev_err(hdev, "Execution of wmt command timed out");
 		clear_bit(BTMTKUART_TX_WAIT_VND_EVT, &bdev->tx_state);
-		err = -ETIMEDOUT;
-		goto err_free_skb;
+		return -ETIMEDOUT;
 	}
 
 	/* Parse and handle the return WMT event */
@@ -471,7 +468,7 @@ mtk_stp_split(struct btmtkuart_dev *bdev, const unsigned char *data, int count,
 	return data;
 }
 
-static void btmtkuart_recv(struct hci_dev *hdev, const u8 *data, size_t count)
+static int btmtkuart_recv(struct hci_dev *hdev, const u8 *data, size_t count)
 {
 	struct btmtkuart_dev *bdev = hci_get_drvdata(hdev);
 	const unsigned char *p_left = data, *p_h4;
@@ -510,20 +507,25 @@ static void btmtkuart_recv(struct hci_dev *hdev, const u8 *data, size_t count)
 			bt_dev_err(bdev->hdev,
 				   "Frame reassembly failed (%d)", err);
 			bdev->rx_skb = NULL;
-			return;
+			return err;
 		}
 
 		sz_left -= sz_h4;
 		p_left += sz_h4;
 	}
+
+	return 0;
 }
 
 static int btmtkuart_receive_buf(struct serdev_device *serdev, const u8 *data,
 				 size_t count)
 {
 	struct btmtkuart_dev *bdev = serdev_device_get_drvdata(serdev);
+	int err;
 
-	btmtkuart_recv(bdev->hdev, data, count);
+	err = btmtkuart_recv(bdev->hdev, data, count);
+	if (err < 0)
+		return err;
 
 	bdev->hdev->stat.byte_rx += count;
 

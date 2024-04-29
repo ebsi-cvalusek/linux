@@ -59,7 +59,6 @@
 #ifdef CONFIG_PPC64
 #include <asm/hvcall.h>
 #include <asm/paca.h>
-#include <asm/lppaca.h>
 #endif
 
 #include "nonstdio.h"
@@ -1529,9 +1528,9 @@ bpt_cmds(void)
 	cmd = inchar();
 
 	switch (cmd) {
-	case 'd': {	/* bd - hardware data breakpoint */
-		static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
-		int mode;
+	static const char badaddr[] = "Only kernel addresses are permitted for breakpoints\n";
+	int mode;
+	case 'd':	/* bd - hardware data breakpoint */
 		if (xmon_is_ro) {
 			printf(xmon_ro_msg);
 			break;
@@ -1564,7 +1563,6 @@ bpt_cmds(void)
 
 		force_enable_xmon();
 		break;
-	}
 
 	case 'i':	/* bi - hardware instr breakpoint */
 		if (xmon_is_ro) {
@@ -3266,7 +3264,8 @@ static void show_task(struct task_struct *volatile tsk)
 	 * appropriate for calling from xmon. This could be moved
 	 * to a common, generic, routine used by both.
 	 */
-	state = (p_state == TASK_RUNNING) ? 'R' :
+	state = (p_state == 0) ? 'R' :
+		(p_state < 0) ? 'U' :
 		(p_state & TASK_UNINTERRUPTIBLE) ? 'D' :
 		(p_state & TASK_STOPPED) ? 'T' :
 		(p_state & TASK_TRACED) ? 'C' :

@@ -1,8 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
-. "$(dirname "${0}")/mptcp_lib.sh"
-
 ret=0
 sin=""
 sout=""
@@ -13,15 +11,13 @@ timeout_poll=30
 timeout_test=$((timeout_poll * 2 + 1))
 mptcp_connect=""
 do_all_tests=1
-iptables="iptables"
-ip6tables="ip6tables"
 
 add_mark_rules()
 {
 	local ns=$1
 	local m=$2
 
-	for t in ${iptables} ${ip6tables}; do
+	for t in iptables ip6tables; do
 		# just to debug: check we have multiple subflows connection requests
 		ip netns exec $ns $t -A OUTPUT -p tcp --syn -m mark --mark $m -j ACCEPT
 
@@ -84,22 +80,20 @@ cleanup()
 	rm -f "$sin" "$sout"
 }
 
-mptcp_lib_check_mptcp
-
 ip -Version > /dev/null 2>&1
 if [ $? -ne 0 ];then
 	echo "SKIP: Could not run test without ip tool"
 	exit $ksft_skip
 fi
 
-# Use the legacy version if available to support old kernel versions
-if iptables-legacy -V &> /dev/null; then
-	iptables="iptables-legacy"
-	ip6tables="ip6tables-legacy"
-elif ! iptables -V &> /dev/null; then
+iptables -V > /dev/null 2>&1
+if [ $? -ne 0 ];then
 	echo "SKIP: Could not run all tests without iptables tool"
 	exit $ksft_skip
-elif ! ip6tables -V &> /dev/null; then
+fi
+
+ip6tables -V > /dev/null 2>&1
+if [ $? -ne 0 ];then
 	echo "SKIP: Could not run all tests without ip6tables tool"
 	exit $ksft_skip
 fi
@@ -109,10 +103,10 @@ check_mark()
 	local ns=$1
 	local af=$2
 
-	tables=${iptables}
+	tables=iptables
 
 	if [ $af -eq 6 ];then
-		tables=${ip6tables}
+		tables=ip6tables
 	fi
 
 	counters=$(ip netns exec $ns $tables -v -L OUTPUT | grep DROP)
@@ -121,7 +115,6 @@ check_mark()
 	for v in $values; do
 		if [ $v -ne 0 ]; then
 			echo "FAIL: got $tables $values in ns $ns , not 0 - not all expected packets marked" 1>&2
-			ret=1
 			return 1
 		fi
 	done
@@ -216,11 +209,11 @@ do_transfer()
 	fi
 
 	if [ $local_addr = "::" ];then
-		check_mark $listener_ns 6 || retc=1
-		check_mark $connector_ns 6 || retc=1
+		check_mark $listener_ns 6
+		check_mark $connector_ns 6
 	else
-		check_mark $listener_ns 4 || retc=1
-		check_mark $connector_ns 4 || retc=1
+		check_mark $listener_ns 4
+		check_mark $connector_ns 4
 	fi
 
 	check_transfer $cin $sout "file received by server"

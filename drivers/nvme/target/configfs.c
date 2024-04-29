@@ -586,8 +586,7 @@ static ssize_t nvmet_ns_revalidate_size_store(struct config_item *item,
 		mutex_unlock(&ns->subsys->lock);
 		return -EINVAL;
 	}
-	if (nvmet_ns_revalidate(ns))
-		nvmet_ns_changed(ns->subsys, ns->nsid);
+	nvmet_ns_revalidate(ns);
 	mutex_unlock(&ns->subsys->lock);
 	return count;
 }
@@ -1190,7 +1189,6 @@ static ssize_t nvmet_subsys_attr_model_store_locked(struct nvmet_subsys *subsys,
 		const char *page, size_t count)
 {
 	int pos = 0, len;
-	char *val;
 
 	if (subsys->subsys_discovered) {
 		pr_err("Can't set model number. %s is already assigned\n",
@@ -1213,11 +1211,9 @@ static ssize_t nvmet_subsys_attr_model_store_locked(struct nvmet_subsys *subsys,
 			return -EINVAL;
 	}
 
-	val = kmemdup_nul(page, len, GFP_KERNEL);
-	if (!val)
+	subsys->model_number = kmemdup_nul(page, len, GFP_KERNEL);
+	if (!subsys->model_number)
 		return -ENOMEM;
-	kfree(subsys->model_number);
-	subsys->model_number = val;
 	return count;
 }
 
@@ -1557,8 +1553,6 @@ static void nvmet_port_release(struct config_item *item)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
 
-	/* Let inflight controllers teardown complete */
-	flush_workqueue(nvmet_wq);
 	list_del(&port->global_entry);
 
 	kfree(port->ana_state);

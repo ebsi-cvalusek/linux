@@ -53,7 +53,7 @@ struct netns_sysctl_ipv6 {
 	int seg6_flowlabel;
 	u32 ioam6_id;
 	u64 ioam6_id_wide;
-	int skip_notify_on_dev_down;
+	bool skip_notify_on_dev_down;
 	u8 fib_notify_on_flag_change;
 };
 
@@ -75,12 +75,11 @@ struct netns_ipv6 {
 	struct list_head	fib6_walkers;
 	rwlock_t		fib6_walker_lock;
 	spinlock_t		fib6_gc_lock;
-	atomic_t		ip6_rt_gc_expire;
-	unsigned long		ip6_rt_last_gc;
-	unsigned char		flowlabel_has_excl;
+	unsigned int		 ip6_rt_gc_expire;
+	unsigned long		 ip6_rt_last_gc;
 #ifdef CONFIG_IPV6_MULTIPLE_TABLES
-	bool			fib6_has_custom_rules;
 	unsigned int		fib6_rules_require_fldissect;
+	bool			fib6_has_custom_rules;
 #ifdef CONFIG_IPV6_SUBTREES
 	unsigned int		fib6_routes_require_src;
 #endif

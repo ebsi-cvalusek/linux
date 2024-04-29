@@ -634,7 +634,7 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dev, "Failed to request irq\n");
 
-		goto err_irq;
+		return ret;
 	}
 
 	ret = rockchip_sfc_init(sfc);

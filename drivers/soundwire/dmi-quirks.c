@@ -59,14 +59,7 @@ static const struct dmi_system_id adr_remap_quirk_table[] = {
 	{
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "HP Spectre x360 Conv"),
-		},
-		.driver_data = (void *)intel_tgl_bios,
-	},
-	{
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
-			DMI_MATCH(DMI_BOARD_NAME, "8709"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "HP Spectre x360 Convertible"),
 		},
 		.driver_data = (void *)intel_tgl_bios,
 	},
@@ -75,14 +68,6 @@ static const struct dmi_system_id adr_remap_quirk_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "LAPBC"),
-		},
-		.driver_data = (void *)intel_tgl_bios,
-	},
-	{
-		/* quirk used for NUC15 LAPBC710 skew */
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "Intel Corporation"),
-			DMI_MATCH(DMI_BOARD_NAME, "LAPBC710"),
 		},
 		.driver_data = (void *)intel_tgl_bios,
 	},

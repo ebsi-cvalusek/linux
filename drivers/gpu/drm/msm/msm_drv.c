@@ -11,7 +11,6 @@
 #include <linux/uaccess.h>
 #include <uapi/linux/sched/types.h>
 
-#include <drm/drm_bridge.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_ioctl.h>
@@ -237,8 +236,6 @@ static int msm_irq_postinstall(struct drm_device *dev)
 
 static int msm_irq_install(struct drm_device *dev, unsigned int irq)
 {
-	struct msm_drm_private *priv = dev->dev_private;
-	struct msm_kms *kms = priv->kms;
 	int ret;
 
 	if (irq == IRQ_NOTCONNECTED)
@@ -249,8 +246,6 @@ static int msm_irq_install(struct drm_device *dev, unsigned int irq)
 	ret = request_irq(irq, msm_irq, 0, dev->driver->name, dev);
 	if (ret)
 		return ret;
-
-	kms->irq_requested = true;
 
 	ret = msm_irq_postinstall(dev);
 	if (ret) {
@@ -267,8 +262,7 @@ static void msm_irq_uninstall(struct drm_device *dev)
 	struct msm_kms *kms = priv->kms;
 
 	kms->funcs->irq_uninstall(kms);
-	if (kms->irq_requested)
-		free_irq(kms->irq, dev);
+	free_irq(kms->irq, dev);
 }
 
 struct msm_vblank_work {
@@ -359,16 +353,13 @@ static int msm_drm_uninit(struct device *dev)
 		msm_fbdev_free(ddev);
 #endif
 
-	if (kms)
-		msm_disp_snapshot_destroy(ddev);
+	msm_disp_snapshot_destroy(ddev);
 
 	drm_mode_config_cleanup(ddev);
 
-	if (kms) {
-		pm_runtime_get_sync(dev);
-		msm_irq_uninstall(ddev);
-		pm_runtime_put_sync(dev);
-	}
+	pm_runtime_get_sync(dev);
+	msm_irq_uninstall(ddev);
+	pm_runtime_put_sync(dev);
 
 	if (kms && kms->funcs)
 		kms->funcs->destroy(kms);
@@ -446,7 +437,7 @@ static int msm_init_vram(struct drm_device *dev)
 		of_node_put(node);
 		if (ret)
 			return ret;
-		size = r.end - r.start + 1;
+		size = r.end - r.start;
 		DRM_INFO("using VRAM carveout: %lx@%pa\n", size, &r.start);
 
 		/* if we have no IOMMU, then we need to use carveout allocator.
@@ -612,7 +603,7 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv)
 		if (IS_ERR(priv->event_thread[i].worker)) {
 			ret = PTR_ERR(priv->event_thread[i].worker);
 			DRM_DEV_ERROR(dev, "failed to create crtc_event kthread\n");
-			priv->event_thread[i].worker = NULL;
+			ret = PTR_ERR(priv->event_thread[i].worker);
 			goto err_msm_uninit;
 		}
 
@@ -947,17 +938,28 @@ static int msm_ioctl_gem_info(struct drm_device *dev, void *data,
 	return ret;
 }
 
-static int wait_fence(struct msm_gpu_submitqueue *queue, uint32_t fence_id,
-		      ktime_t timeout)
+static int msm_ioctl_wait_fence(struct drm_device *dev, void *data,
+		struct drm_file *file)
 {
+	struct msm_drm_private *priv = dev->dev_private;
+	struct drm_msm_wait_fence *args = data;
+	ktime_t timeout = to_ktime(args->timeout);
+	struct msm_gpu_submitqueue *queue;
+	struct msm_gpu *gpu = priv->gpu;
 	struct dma_fence *fence;
 	int ret;
 
-	if (fence_id > queue->last_fence) {
-		DRM_ERROR_RATELIMITED("waiting on invalid fence: %u (of %u)\n",
-				      fence_id, queue->last_fence);
+	if (args->pad) {
+		DRM_ERROR("invalid pad: %08x\n", args->pad);
 		return -EINVAL;
 	}
+
+	if (!gpu)
+		return 0;
+
+	queue = msm_submitqueue_get(file->driver_priv, args->queueid);
+	if (!queue)
+		return -ENOENT;
 
 	/*
 	 * Map submitqueue scoped "seqno" (which is actually an idr key)
@@ -970,7 +972,7 @@ static int wait_fence(struct msm_gpu_submitqueue *queue, uint32_t fence_id,
 	ret = mutex_lock_interruptible(&queue->lock);
 	if (ret)
 		return ret;
-	fence = idr_find(&queue->fence_idr, fence_id);
+	fence = idr_find(&queue->fence_idr, args->fence);
 	if (fence)
 		fence = dma_fence_get_rcu(fence);
 	mutex_unlock(&queue->lock);
@@ -986,32 +988,6 @@ static int wait_fence(struct msm_gpu_submitqueue *queue, uint32_t fence_id,
 	}
 
 	dma_fence_put(fence);
-
-	return ret;
-}
-
-static int msm_ioctl_wait_fence(struct drm_device *dev, void *data,
-		struct drm_file *file)
-{
-	struct msm_drm_private *priv = dev->dev_private;
-	struct drm_msm_wait_fence *args = data;
-	struct msm_gpu_submitqueue *queue;
-	int ret;
-
-	if (args->pad) {
-		DRM_ERROR("invalid pad: %08x\n", args->pad);
-		return -EINVAL;
-	}
-
-	if (!priv->gpu)
-		return 0;
-
-	queue = msm_submitqueue_get(file->driver_priv, args->queueid);
-	if (!queue)
-		return -ENOENT;
-
-	ret = wait_fence(queue, args->fence, to_ktime(args->timeout));
-
 	msm_submitqueue_put(queue);
 
 	return ret;
@@ -1105,7 +1081,7 @@ static const struct drm_driver msm_driver = {
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_import_sg_table = msm_gem_prime_import_sg_table,
-	.gem_prime_mmap     = msm_gem_prime_mmap,
+	.gem_prime_mmap     = drm_gem_prime_mmap,
 #ifdef CONFIG_DEBUG_FS
 	.debugfs_init       = msm_debugfs_init,
 #endif

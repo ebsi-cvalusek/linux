@@ -245,7 +245,7 @@ static int populate_node(const void *blob,
 	}
 
 	*pnp = np;
-	return 0;
+	return true;
 }
 
 static void reverse_nodes(struct device_node *parent)
@@ -313,7 +313,7 @@ static int unflatten_dt_nodes(const void *blob,
 	for (offset = 0;
 	     offset >= 0 && depth >= initial_depth;
 	     offset = fdt_next_node(blob, offset, &depth)) {
-		if (WARN_ON_ONCE(depth >= FDT_MAX_DEPTH - 1))
+		if (WARN_ON_ONCE(depth >= FDT_MAX_DEPTH))
 			continue;
 
 		if (!IS_ENABLED(CONFIG_OF_KOBJ) &&
@@ -482,11 +482,9 @@ static int __init early_init_dt_reserve_memory_arch(phys_addr_t base,
 	if (nomap) {
 		/*
 		 * If the memory is already reserved (by another region), we
-		 * should not allow it to be marked nomap, but don't worry
-		 * if the region isn't memory as it won't be mapped.
+		 * should not allow it to be marked nomap.
 		 */
-		if (memblock_overlaps_region(&memblock.memory, base, size) &&
-		    memblock_is_region_reserved(base, size))
+		if (memblock_is_region_reserved(base, size))
 			return -EBUSY;
 
 		return memblock_mark_nomap(base, size);
@@ -971,22 +969,18 @@ static void __init early_init_dt_check_for_elfcorehdr(unsigned long node)
 		 elfcorehdr_addr, elfcorehdr_size);
 }
 
-static unsigned long chosen_node_offset = -FDT_ERR_NOTFOUND;
+static phys_addr_t cap_mem_addr;
+static phys_addr_t cap_mem_size;
 
 /**
  * early_init_dt_check_for_usable_mem_range - Decode usable memory range
  * location from flat tree
+ * @node: reference to node containing usable memory range location ('chosen')
  */
-void __init early_init_dt_check_for_usable_mem_range(void)
+static void __init early_init_dt_check_for_usable_mem_range(unsigned long node)
 {
 	const __be32 *prop;
 	int len;
-	phys_addr_t cap_mem_addr;
-	phys_addr_t cap_mem_size;
-	unsigned long node = chosen_node_offset;
-
-	if ((long)node < 0)
-		return;
 
 	pr_debug("Looking for usable-memory-range property... ");
 
@@ -999,8 +993,6 @@ void __init early_init_dt_check_for_usable_mem_range(void)
 
 	pr_debug("cap_mem_start=%pa cap_mem_size=%pa\n", &cap_mem_addr,
 		 &cap_mem_size);
-
-	memblock_cap_memory_range(cap_mem_addr, cap_mem_size);
 }
 
 #ifdef CONFIG_SERIAL_EARLYCON
@@ -1149,10 +1141,9 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 	    (strcmp(uname, "chosen") != 0 && strcmp(uname, "chosen@0") != 0))
 		return 0;
 
-	chosen_node_offset = node;
-
 	early_init_dt_check_for_initrd(node);
 	early_init_dt_check_for_elfcorehdr(node);
+	early_init_dt_check_for_usable_mem_range(node);
 
 	/* Retrieve command line */
 	p = of_get_flat_dt_prop(node, "bootargs", &l);
@@ -1288,7 +1279,7 @@ void __init early_init_dt_scan_nodes(void)
 	of_scan_flat_dt(early_init_dt_scan_memory, NULL);
 
 	/* Handle linux,usable-memory-range property */
-	early_init_dt_check_for_usable_mem_range();
+	memblock_cap_memory_range(cap_mem_addr, cap_mem_size);
 }
 
 bool __init early_init_dt_scan(void *params)

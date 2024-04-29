@@ -1352,7 +1352,7 @@ Mutex API reference
 Futex API reference
 ===================
 
-.. kernel-doc:: kernel/futex/core.c
+.. kernel-doc:: kernel/futex.c
    :internal:
 
 Further reading

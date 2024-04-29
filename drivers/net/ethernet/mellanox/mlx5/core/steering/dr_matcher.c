@@ -13,6 +13,18 @@ static bool dr_mask_is_dmac_set(struct mlx5dr_match_spec *spec)
 	return (spec->dmac_47_16 || spec->dmac_15_0);
 }
 
+static bool dr_mask_is_src_addr_set(struct mlx5dr_match_spec *spec)
+{
+	return (spec->src_ip_127_96 || spec->src_ip_95_64 ||
+		spec->src_ip_63_32 || spec->src_ip_31_0);
+}
+
+static bool dr_mask_is_dst_addr_set(struct mlx5dr_match_spec *spec)
+{
+	return (spec->dst_ip_127_96 || spec->dst_ip_95_64 ||
+		spec->dst_ip_63_32 || spec->dst_ip_31_0);
+}
+
 static bool dr_mask_is_l3_base_set(struct mlx5dr_match_spec *spec)
 {
 	return (spec->ip_protocol || spec->frag || spec->tcp_flags ||
@@ -468,11 +480,11 @@ static int dr_matcher_set_ste_builders(struct mlx5dr_matcher *matcher,
 						    &mask, inner, rx);
 
 		if (outer_ipv == DR_RULE_IPV6) {
-			if (DR_MASK_IS_DST_IP_SET(&mask.outer))
+			if (dr_mask_is_dst_addr_set(&mask.outer))
 				mlx5dr_ste_build_eth_l3_ipv6_dst(ste_ctx, &sb[idx++],
 								 &mask, inner, rx);
 
-			if (DR_MASK_IS_SRC_IP_SET(&mask.outer))
+			if (dr_mask_is_src_addr_set(&mask.outer))
 				mlx5dr_ste_build_eth_l3_ipv6_src(ste_ctx, &sb[idx++],
 								 &mask, inner, rx);
 
@@ -568,11 +580,11 @@ static int dr_matcher_set_ste_builders(struct mlx5dr_matcher *matcher,
 						    &mask, inner, rx);
 
 		if (inner_ipv == DR_RULE_IPV6) {
-			if (DR_MASK_IS_DST_IP_SET(&mask.inner))
+			if (dr_mask_is_dst_addr_set(&mask.inner))
 				mlx5dr_ste_build_eth_l3_ipv6_dst(ste_ctx, &sb[idx++],
 								 &mask, inner, rx);
 
-			if (DR_MASK_IS_SRC_IP_SET(&mask.inner))
+			if (dr_mask_is_src_addr_set(&mask.inner))
 				mlx5dr_ste_build_eth_l3_ipv6_src(ste_ctx, &sb[idx++],
 								 &mask, inner, rx);
 
@@ -709,7 +721,7 @@ static int dr_matcher_add_to_tbl(struct mlx5dr_matcher *matcher)
 	int ret;
 
 	next_matcher = NULL;
-	list_for_each_entry(tmp_matcher, &tbl->matcher_list, list_node) {
+	list_for_each_entry(tmp_matcher, &tbl->matcher_list, matcher_list) {
 		if (tmp_matcher->prio >= matcher->prio) {
 			next_matcher = tmp_matcher;
 			break;
@@ -719,11 +731,11 @@ static int dr_matcher_add_to_tbl(struct mlx5dr_matcher *matcher)
 
 	prev_matcher = NULL;
 	if (next_matcher && !first)
-		prev_matcher = list_prev_entry(next_matcher, list_node);
+		prev_matcher = list_prev_entry(next_matcher, matcher_list);
 	else if (!first)
 		prev_matcher = list_last_entry(&tbl->matcher_list,
 					       struct mlx5dr_matcher,
-					       list_node);
+					       matcher_list);
 
 	if (dmn->type == MLX5DR_DOMAIN_TYPE_FDB ||
 	    dmn->type == MLX5DR_DOMAIN_TYPE_NIC_RX) {
@@ -744,12 +756,12 @@ static int dr_matcher_add_to_tbl(struct mlx5dr_matcher *matcher)
 	}
 
 	if (prev_matcher)
-		list_add(&matcher->list_node, &prev_matcher->list_node);
+		list_add(&matcher->matcher_list, &prev_matcher->matcher_list);
 	else if (next_matcher)
-		list_add_tail(&matcher->list_node,
-			      &next_matcher->list_node);
+		list_add_tail(&matcher->matcher_list,
+			      &next_matcher->matcher_list);
 	else
-		list_add(&matcher->list_node, &tbl->matcher_list);
+		list_add(&matcher->matcher_list, &tbl->matcher_list);
 
 	return 0;
 }
@@ -922,7 +934,7 @@ mlx5dr_matcher_create(struct mlx5dr_table *tbl,
 	matcher->prio = priority;
 	matcher->match_criteria = match_criteria_enable;
 	refcount_set(&matcher->refcount, 1);
-	INIT_LIST_HEAD(&matcher->list_node);
+	INIT_LIST_HEAD(&matcher->matcher_list);
 
 	mlx5dr_domain_lock(tbl->dmn);
 
@@ -985,15 +997,15 @@ static int dr_matcher_remove_from_tbl(struct mlx5dr_matcher *matcher)
 	struct mlx5dr_domain *dmn = tbl->dmn;
 	int ret = 0;
 
-	if (list_is_last(&matcher->list_node, &tbl->matcher_list))
+	if (list_is_last(&matcher->matcher_list, &tbl->matcher_list))
 		next_matcher = NULL;
 	else
-		next_matcher = list_next_entry(matcher, list_node);
+		next_matcher = list_next_entry(matcher, matcher_list);
 
-	if (matcher->list_node.prev == &tbl->matcher_list)
+	if (matcher->matcher_list.prev == &tbl->matcher_list)
 		prev_matcher = NULL;
 	else
-		prev_matcher = list_prev_entry(matcher, list_node);
+		prev_matcher = list_prev_entry(matcher, matcher_list);
 
 	if (dmn->type == MLX5DR_DOMAIN_TYPE_FDB ||
 	    dmn->type == MLX5DR_DOMAIN_TYPE_NIC_RX) {
@@ -1013,7 +1025,7 @@ static int dr_matcher_remove_from_tbl(struct mlx5dr_matcher *matcher)
 			return ret;
 	}
 
-	list_del(&matcher->list_node);
+	list_del(&matcher->matcher_list);
 
 	return 0;
 }

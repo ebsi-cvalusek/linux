@@ -72,7 +72,7 @@ static __always_inline void __exit_to_kernel_mode(struct pt_regs *regs)
 	if (interrupts_enabled(regs)) {
 		if (regs->exit_rcu) {
 			trace_hardirqs_on_prepare();
-			lockdep_hardirqs_on_prepare();
+			lockdep_hardirqs_on_prepare(CALLER_ADDR0);
 			rcu_irq_exit();
 			lockdep_hardirqs_on(CALLER_ADDR0);
 			return;
@@ -117,7 +117,7 @@ static __always_inline void enter_from_user_mode(struct pt_regs *regs)
 static __always_inline void __exit_to_user_mode(void)
 {
 	trace_hardirqs_on_prepare();
-	lockdep_hardirqs_on_prepare();
+	lockdep_hardirqs_on_prepare(CALLER_ADDR0);
 	user_enter_irqoff();
 	lockdep_hardirqs_on(CALLER_ADDR0);
 }
@@ -175,7 +175,7 @@ static void noinstr arm64_exit_nmi(struct pt_regs *regs)
 	ftrace_nmi_exit();
 	if (restore) {
 		trace_hardirqs_on_prepare();
-		lockdep_hardirqs_on_prepare();
+		lockdep_hardirqs_on_prepare(CALLER_ADDR0);
 	}
 
 	rcu_nmi_exit();
@@ -211,7 +211,7 @@ static void noinstr arm64_exit_el1_dbg(struct pt_regs *regs)
 
 	if (restore) {
 		trace_hardirqs_on_prepare();
-		lockdep_hardirqs_on_prepare();
+		lockdep_hardirqs_on_prepare(CALLER_ADDR0);
 	}
 
 	rcu_nmi_exit();
@@ -273,13 +273,13 @@ extern void (*handle_arch_irq)(struct pt_regs *);
 extern void (*handle_arch_fiq)(struct pt_regs *);
 
 static void noinstr __panic_unhandled(struct pt_regs *regs, const char *vector,
-				      unsigned long esr)
+				      unsigned int esr)
 {
 	arm64_enter_nmi(regs);
 
 	console_verbose();
 
-	pr_crit("Unhandled %s exception on CPU%d, ESR 0x%016lx -- %s\n",
+	pr_crit("Unhandled %s exception on CPU%d, ESR 0x%08x -- %s\n",
 		vector, smp_processor_id(), esr,
 		esr_get_class_string(esr));
 
@@ -320,8 +320,7 @@ static void cortex_a76_erratum_1463225_svc_handler(void)
 	__this_cpu_write(__in_cortex_a76_erratum_1463225_wa, 0);
 }
 
-static __always_inline bool
-cortex_a76_erratum_1463225_debug_handler(struct pt_regs *regs)
+static bool cortex_a76_erratum_1463225_debug_handler(struct pt_regs *regs)
 {
 	if (!__this_cpu_read(__in_cortex_a76_erratum_1463225_wa))
 		return false;
@@ -371,20 +370,11 @@ static void noinstr el1_pc(struct pt_regs *regs, unsigned long esr)
 	exit_to_kernel_mode(regs);
 }
 
-static void noinstr el1_undef(struct pt_regs *regs, unsigned long esr)
+static void noinstr el1_undef(struct pt_regs *regs)
 {
 	enter_from_kernel_mode(regs);
 	local_daif_inherit(regs);
-	do_el1_undef(regs, esr);
-	local_daif_mask();
-	exit_to_kernel_mode(regs);
-}
-
-static void noinstr el1_bti(struct pt_regs *regs, unsigned long esr)
-{
-	enter_from_kernel_mode(regs);
-	local_daif_inherit(regs);
-	do_el1_bti(regs, esr);
+	do_undefinstr(regs);
 	local_daif_mask();
 	exit_to_kernel_mode(regs);
 }
@@ -403,7 +393,7 @@ static void noinstr el1_fpac(struct pt_regs *regs, unsigned long esr)
 {
 	enter_from_kernel_mode(regs);
 	local_daif_inherit(regs);
-	do_el1_fpac(regs, esr);
+	do_ptrauth_fault(regs, esr);
 	local_daif_mask();
 	exit_to_kernel_mode(regs);
 }
@@ -426,10 +416,7 @@ asmlinkage void noinstr el1h_64_sync_handler(struct pt_regs *regs)
 		break;
 	case ESR_ELx_EC_SYS64:
 	case ESR_ELx_EC_UNKNOWN:
-		el1_undef(regs, esr);
-		break;
-	case ESR_ELx_EC_BTI:
-		el1_bti(regs, esr);
+		el1_undef(regs);
 		break;
 	case ESR_ELx_EC_BREAKPT_CUR:
 	case ESR_ELx_EC_SOFTSTP_CUR:
@@ -541,7 +528,7 @@ static void noinstr el0_sys(struct pt_regs *regs, unsigned long esr)
 {
 	enter_from_user_mode(regs);
 	local_daif_restore(DAIF_PROCCTX);
-	do_el0_sys(esr, regs);
+	do_sysinstr(esr, regs);
 	exit_to_user_mode(regs);
 }
 
@@ -566,11 +553,11 @@ static void noinstr el0_sp(struct pt_regs *regs, unsigned long esr)
 	exit_to_user_mode(regs);
 }
 
-static void noinstr el0_undef(struct pt_regs *regs, unsigned long esr)
+static void noinstr el0_undef(struct pt_regs *regs)
 {
 	enter_from_user_mode(regs);
 	local_daif_restore(DAIF_PROCCTX);
-	do_el0_undef(regs, esr);
+	do_undefinstr(regs);
 	exit_to_user_mode(regs);
 }
 
@@ -578,7 +565,7 @@ static void noinstr el0_bti(struct pt_regs *regs)
 {
 	enter_from_user_mode(regs);
 	local_daif_restore(DAIF_PROCCTX);
-	do_el0_bti(regs);
+	do_bti(regs);
 	exit_to_user_mode(regs);
 }
 
@@ -613,7 +600,7 @@ static void noinstr el0_fpac(struct pt_regs *regs, unsigned long esr)
 {
 	enter_from_user_mode(regs);
 	local_daif_restore(DAIF_PROCCTX);
-	do_el0_fpac(regs, esr);
+	do_ptrauth_fault(regs, esr);
 	exit_to_user_mode(regs);
 }
 
@@ -651,7 +638,7 @@ asmlinkage void noinstr el0t_64_sync_handler(struct pt_regs *regs)
 		el0_pc(regs, esr);
 		break;
 	case ESR_ELx_EC_UNKNOWN:
-		el0_undef(regs, esr);
+		el0_undef(regs);
 		break;
 	case ESR_ELx_EC_BTI:
 		el0_bti(regs);
@@ -728,7 +715,7 @@ static void noinstr el0_cp15(struct pt_regs *regs, unsigned long esr)
 {
 	enter_from_user_mode(regs);
 	local_daif_restore(DAIF_PROCCTX);
-	do_el0_cp15(esr, regs);
+	do_cp15instr(esr, regs);
 	exit_to_user_mode(regs);
 }
 
@@ -767,7 +754,7 @@ asmlinkage void noinstr el0t_32_sync_handler(struct pt_regs *regs)
 	case ESR_ELx_EC_CP14_MR:
 	case ESR_ELx_EC_CP14_LS:
 	case ESR_ELx_EC_CP14_64:
-		el0_undef(regs, esr);
+		el0_undef(regs);
 		break;
 	case ESR_ELx_EC_CP15_32:
 	case ESR_ELx_EC_CP15_64:
@@ -808,7 +795,7 @@ UNHANDLED(el0t, 32, error)
 #ifdef CONFIG_VMAP_STACK
 asmlinkage void noinstr handle_bad_stack(struct pt_regs *regs)
 {
-	unsigned long esr = read_sysreg(esr_el1);
+	unsigned int esr = read_sysreg(esr_el1);
 	unsigned long far = read_sysreg(far_el1);
 
 	arm64_enter_nmi(regs);

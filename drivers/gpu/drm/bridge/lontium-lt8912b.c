@@ -43,6 +43,7 @@ struct lt8912 {
 
 	u8 data_lanes;
 	bool is_power_on;
+	bool is_attached;
 };
 
 static int lt8912_write_init_config(struct lt8912 *lt)
@@ -185,7 +186,7 @@ static int lt8912_write_lvds_config(struct lt8912 *lt)
 		{0x03, 0xff},
 	};
 
-	return regmap_multi_reg_write(lt->regmap[I2C_MAIN], seq, ARRAY_SIZE(seq));
+	return regmap_multi_reg_write(lt->regmap[I2C_CEC_DSI], seq, ARRAY_SIZE(seq));
 };
 
 static inline struct lt8912 *bridge_to_lt8912(struct drm_bridge *b)
@@ -265,7 +266,7 @@ static int lt8912_video_setup(struct lt8912 *lt)
 	u32 hactive, h_total, hpw, hfp, hbp;
 	u32 vactive, v_total, vpw, vfp, vbp;
 	u8 settle = 0x08;
-	int ret, hsync_activehigh, vsync_activehigh;
+	int ret;
 
 	if (!lt)
 		return -EINVAL;
@@ -275,14 +276,12 @@ static int lt8912_video_setup(struct lt8912 *lt)
 	hpw = lt->mode.hsync_len;
 	hbp = lt->mode.hback_porch;
 	h_total = hactive + hfp + hpw + hbp;
-	hsync_activehigh = lt->mode.flags & DISPLAY_FLAGS_HSYNC_HIGH;
 
 	vactive = lt->mode.vactive;
 	vfp = lt->mode.vfront_porch;
 	vpw = lt->mode.vsync_len;
 	vbp = lt->mode.vback_porch;
 	v_total = vactive + vfp + vpw + vbp;
-	vsync_activehigh = lt->mode.flags & DISPLAY_FLAGS_VSYNC_HIGH;
 
 	if (vactive <= 600)
 		settle = 0x04;
@@ -315,13 +314,6 @@ static int lt8912_video_setup(struct lt8912 *lt)
 
 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x3e, hfp & 0xff);
 	ret |= regmap_write(lt->regmap[I2C_CEC_DSI], 0x3f, hfp >> 8);
-
-	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xab, BIT(0),
-				  vsync_activehigh ? BIT(0) : 0);
-	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xab, BIT(1),
-				  hsync_activehigh ? BIT(1) : 0);
-	ret |= regmap_update_bits(lt->regmap[I2C_MAIN], 0xb2, BIT(0),
-				  lt->connector.display_info.is_hdmi ? BIT(0) : 0);
 
 	return ret;
 }
@@ -480,11 +472,11 @@ static int lt8912_attach_dsi(struct lt8912 *lt)
 		return -EPROBE_DEFER;
 	}
 
-	dsi = devm_mipi_dsi_device_register_full(dev, host, &info);
+	dsi = mipi_dsi_device_register_full(host, &info);
 	if (IS_ERR(dsi)) {
 		ret = PTR_ERR(dsi);
 		dev_err(dev, "failed to create dsi device (%d)\n", ret);
-		return ret;
+		goto err_dsi_device;
 	}
 
 	lt->dsi = dsi;
@@ -493,24 +485,28 @@ static int lt8912_attach_dsi(struct lt8912 *lt)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
+			  MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM |
 			  MIPI_DSI_MODE_NO_EOT_PACKET;
 
-	ret = devm_mipi_dsi_attach(dev, dsi);
+	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
 		dev_err(dev, "failed to attach dsi to host\n");
-		return ret;
+		goto err_dsi_attach;
 	}
 
 	return 0;
+
+err_dsi_attach:
+	mipi_dsi_device_unregister(dsi);
+err_dsi_device:
+	return ret;
 }
 
-static void lt8912_bridge_hpd_cb(void *data, enum drm_connector_status status)
+static void lt8912_detach_dsi(struct lt8912 *lt)
 {
-	struct lt8912 *lt = data;
-
-	if (lt->bridge.dev)
-		drm_helper_hpd_irq_event(lt->bridge.dev);
+	mipi_dsi_detach(lt->dsi);
+	mipi_dsi_device_unregister(lt->dsi);
 }
 
 static int lt8912_bridge_connector_init(struct drm_bridge *bridge)
@@ -519,13 +515,8 @@ static int lt8912_bridge_connector_init(struct drm_bridge *bridge)
 	struct lt8912 *lt = bridge_to_lt8912(bridge);
 	struct drm_connector *connector = &lt->connector;
 
-	if (lt->hdmi_port->ops & DRM_BRIDGE_OP_HPD) {
-		drm_bridge_hpd_enable(lt->hdmi_port, lt8912_bridge_hpd_cb, lt);
-		connector->polled = DRM_CONNECTOR_POLL_HPD;
-	} else {
-		connector->polled = DRM_CONNECTOR_POLL_CONNECT |
-				    DRM_CONNECTOR_POLL_DISCONNECT;
-	}
+	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
+			    DRM_CONNECTOR_POLL_DISCONNECT;
 
 	ret = drm_connector_init(bridge->dev, connector,
 				 &lt8912_connector_funcs,
@@ -548,13 +539,6 @@ static int lt8912_bridge_attach(struct drm_bridge *bridge,
 	struct lt8912 *lt = bridge_to_lt8912(bridge);
 	int ret;
 
-	ret = drm_bridge_attach(bridge->encoder, lt->hdmi_port, bridge,
-				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
-	if (ret < 0) {
-		dev_err(lt->dev, "Failed to attach next bridge (%d)\n", ret);
-		return ret;
-	}
-
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)) {
 		ret = lt8912_bridge_connector_init(bridge);
 		if (ret) {
@@ -575,6 +559,8 @@ static int lt8912_bridge_attach(struct drm_bridge *bridge,
 	if (ret)
 		goto error;
 
+	lt->is_attached = true;
+
 	return 0;
 
 error:
@@ -586,10 +572,12 @@ static void lt8912_bridge_detach(struct drm_bridge *bridge)
 {
 	struct lt8912 *lt = bridge_to_lt8912(bridge);
 
-	lt8912_hard_power_off(lt);
-
-	if (lt->connector.dev && lt->hdmi_port->ops & DRM_BRIDGE_OP_HPD)
-		drm_bridge_hpd_disable(lt->hdmi_port);
+	if (lt->is_attached) {
+		lt8912_detach_dsi(lt);
+		lt8912_hard_power_off(lt);
+		drm_connector_unregister(&lt->connector);
+		drm_connector_cleanup(&lt->connector);
+	}
 }
 
 static enum drm_connector_status
@@ -673,8 +661,8 @@ static int lt8912_parse_dt(struct lt8912 *lt)
 
 	lt->hdmi_port = of_drm_find_bridge(port_node);
 	if (!lt->hdmi_port) {
-		ret = -EPROBE_DEFER;
-		dev_err_probe(lt->dev, ret, "%s: Failed to get hdmi port\n", __func__);
+		dev_err(lt->dev, "%s: Failed to get hdmi port\n", __func__);
+		ret = -ENODEV;
 		goto err_free_host_node;
 	}
 
@@ -742,6 +730,7 @@ static int lt8912_remove(struct i2c_client *client)
 {
 	struct lt8912 *lt = i2c_get_clientdata(client);
 
+	lt8912_bridge_detach(&lt->bridge);
 	drm_bridge_remove(&lt->bridge);
 	lt8912_free_i2c(lt);
 	lt8912_put_dt(lt);

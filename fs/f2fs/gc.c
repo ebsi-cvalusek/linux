@@ -944,7 +944,7 @@ next_step:
 			continue;
 		}
 
-		if (f2fs_get_node_info(sbi, nid, &ni, false)) {
+		if (f2fs_get_node_info(sbi, nid, &ni)) {
 			f2fs_put_page(node_page, 1);
 			continue;
 		}
@@ -1002,7 +1002,7 @@ static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 {
 	struct page *node_page;
 	nid_t nid;
-	unsigned int ofs_in_node, max_addrs, base;
+	unsigned int ofs_in_node;
 	block_t source_blkaddr;
 
 	nid = le32_to_cpu(sum->nid);
@@ -1012,7 +1012,7 @@ static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 	if (IS_ERR(node_page))
 		return false;
 
-	if (f2fs_get_node_info(sbi, nid, dni, false)) {
+	if (f2fs_get_node_info(sbi, nid, dni)) {
 		f2fs_put_page(node_page, 1);
 		return false;
 	}
@@ -1021,26 +1021,6 @@ static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 		f2fs_warn(sbi, "%s: valid data with mismatched node version.",
 			  __func__);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
-	}
-
-	if (f2fs_check_nid_range(sbi, dni->ino)) {
-		f2fs_put_page(node_page, 1);
-		return false;
-	}
-
-	if (IS_INODE(node_page)) {
-		base = offset_in_addr(F2FS_INODE(node_page));
-		max_addrs = DEF_ADDRS_PER_INODE;
-	} else {
-		base = 0;
-		max_addrs = DEF_ADDRS_PER_BLOCK;
-	}
-
-	if (base + ofs_in_node >= max_addrs) {
-		f2fs_err(sbi, "Inconsistent blkaddr offset: base:%u, ofs_in_node:%u, max:%u, ino:%u, nid:%u",
-			base, ofs_in_node, max_addrs, dni->ino, dni->nid);
-		f2fs_put_page(node_page, 1);
-		return false;
 	}
 
 	*nofs = ofs_of_node(node_page);
@@ -1056,7 +1036,7 @@ static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 			if (!test_and_set_bit(segno, SIT_I(sbi)->invalid_segmap)) {
 				f2fs_err(sbi, "mismatched blkaddr %u (source_blkaddr %u) in seg %u",
 					 blkaddr, source_blkaddr, segno);
-				set_sbi_flag(sbi, SBI_NEED_FSCK);
+				f2fs_bug_on(sbi, 1);
 			}
 		}
 #endif
@@ -1080,8 +1060,8 @@ static int ra_data_block(struct inode *inode, pgoff_t index)
 		.op = REQ_OP_READ,
 		.op_flags = 0,
 		.encrypted_page = NULL,
-		.in_list = 0,
-		.retry = 0,
+		.in_list = false,
+		.retry = false,
 	};
 	int err;
 
@@ -1167,8 +1147,8 @@ static int move_data_block(struct inode *inode, block_t bidx,
 		.op = REQ_OP_READ,
 		.op_flags = 0,
 		.encrypted_page = NULL,
-		.in_list = 0,
-		.retry = 0,
+		.in_list = false,
+		.retry = false,
 	};
 	struct dnode_of_data dn;
 	struct f2fs_summary sum;
@@ -1199,8 +1179,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 	}
 
 	if (f2fs_is_pinned_file(inode)) {
-		if (gc_type == FG_GC)
-			f2fs_pin_file_control(inode, true);
+		f2fs_pin_file_control(inode, true);
 		err = -EAGAIN;
 		goto out;
 	}
@@ -1224,7 +1203,7 @@ static int move_data_block(struct inode *inode, block_t bidx,
 
 	f2fs_wait_on_block_writeback(inode, dn.data_blkaddr);
 
-	err = f2fs_get_node_info(fio.sbi, dn.nid, &ni, false);
+	err = f2fs_get_node_info(fio.sbi, dn.nid, &ni);
 	if (err)
 		goto put_out;
 
@@ -1475,8 +1454,7 @@ next_step:
 
 		if (phase == 3) {
 			inode = f2fs_iget(sb, dni.ino);
-			if (IS_ERR(inode) || is_bad_inode(inode) ||
-					special_file(inode->i_mode))
+			if (IS_ERR(inode) || is_bad_inode(inode))
 				continue;
 
 			if (!down_write_trylock(
@@ -1681,9 +1659,8 @@ freed:
 				get_valid_blocks(sbi, segno, false) == 0)
 			seg_freed++;
 
-		if (__is_large_section(sbi))
-			sbi->next_victim_seg[gc_type] =
-				(segno + 1 < end_segno) ? segno + 1 : NULL_SEGNO;
+		if (__is_large_section(sbi) && segno + 1 < end_segno)
+			sbi->next_victim_seg[gc_type] = segno + 1;
 skip:
 		f2fs_put_page(sum_page, 0);
 	}
@@ -1782,31 +1759,23 @@ gc_more:
 	if (sync)
 		goto stop;
 
-	if (!has_not_enough_free_secs(sbi, sec_freed, 0))
-		goto stop;
-
-	if (skipped_round <= MAX_SKIP_GC_COUNT || skipped_round * 2 < round) {
-
-		/* Write checkpoint to reclaim prefree segments */
-		if (free_sections(sbi) < NR_CURSEG_PERSIST_TYPE &&
-				prefree_segments(sbi) &&
-				!is_sbi_flag_set(sbi, SBI_CP_DISABLED)) {
-			ret = f2fs_write_checkpoint(sbi, &cpc);
-			if (ret)
-				goto stop;
+	if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
+		if (skipped_round <= MAX_SKIP_GC_COUNT ||
+					skipped_round * 2 < round) {
+			segno = NULL_SEGNO;
+			goto gc_more;
 		}
-		segno = NULL_SEGNO;
-		goto gc_more;
+
+		if (first_skipped < last_skipped &&
+				(last_skipped - first_skipped) >
+						sbi->skipped_gc_rwsem) {
+			f2fs_drop_inmem_pages_all(sbi, true);
+			segno = NULL_SEGNO;
+			goto gc_more;
+		}
+		if (gc_type == FG_GC && !is_sbi_flag_set(sbi, SBI_CP_DISABLED))
+			ret = f2fs_write_checkpoint(sbi, &cpc);
 	}
-	if (first_skipped < last_skipped &&
-			(last_skipped - first_skipped) >
-					sbi->skipped_gc_rwsem) {
-		f2fs_drop_inmem_pages_all(sbi, true);
-		segno = NULL_SEGNO;
-		goto gc_more;
-	}
-	if (gc_type == FG_GC && !is_sbi_flag_set(sbi, SBI_CP_DISABLED))
-		ret = f2fs_write_checkpoint(sbi, &cpc);
 stop:
 	SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
 	SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno;
@@ -2001,9 +1970,8 @@ static void update_fs_metadata(struct f2fs_sb_info *sbi, int secs)
 	}
 }
 
-int f2fs_resize_fs(struct file *filp, __u64 block_count)
+int f2fs_resize_fs(struct f2fs_sb_info *sbi, __u64 block_count)
 {
-	struct f2fs_sb_info *sbi = F2FS_I_SB(file_inode(filp));
 	__u64 old_block_count, shrunk_blocks;
 	struct cp_control cpc = { CP_RESIZE, 0, 0, 0 };
 	unsigned int secs;
@@ -2041,18 +2009,12 @@ int f2fs_resize_fs(struct file *filp, __u64 block_count)
 		return -EINVAL;
 	}
 
-	err = mnt_want_write_file(filp);
-	if (err)
-		return err;
-
 	shrunk_blocks = old_block_count - block_count;
 	secs = div_u64(shrunk_blocks, BLKS_PER_SEC(sbi));
 
 	/* stop other GC */
-	if (!down_write_trylock(&sbi->gc_lock)) {
-		err = -EAGAIN;
-		goto out_drop_write;
-	}
+	if (!down_write_trylock(&sbi->gc_lock))
+		return -EAGAIN;
 
 	/* stop CP to protect MAIN_SEC in free_segment_range */
 	f2fs_lock_op(sbi);
@@ -2072,18 +2034,12 @@ int f2fs_resize_fs(struct file *filp, __u64 block_count)
 out_unlock:
 	f2fs_unlock_op(sbi);
 	up_write(&sbi->gc_lock);
-out_drop_write:
-	mnt_drop_write_file(filp);
 	if (err)
 		return err;
 
+	set_sbi_flag(sbi, SBI_IS_RESIZEFS);
+
 	freeze_super(sbi->sb);
-
-	if (f2fs_readonly(sbi->sb)) {
-		thaw_super(sbi->sb);
-		return -EROFS;
-	}
-
 	down_write(&sbi->gc_lock);
 	down_write(&sbi->cp_global_sem);
 
@@ -2098,7 +2054,6 @@ out_drop_write:
 	if (err)
 		goto out_err;
 
-	set_sbi_flag(sbi, SBI_IS_RESIZEFS);
 	err = free_segment_range(sbi, secs, false);
 	if (err)
 		goto recover_out;
@@ -2122,7 +2077,6 @@ out_drop_write:
 		f2fs_commit_super(sbi, false);
 	}
 recover_out:
-	clear_sbi_flag(sbi, SBI_IS_RESIZEFS);
 	if (err) {
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 		f2fs_err(sbi, "resize_fs failed, should run fsck to repair!");
@@ -2135,5 +2089,6 @@ out_err:
 	up_write(&sbi->cp_global_sem);
 	up_write(&sbi->gc_lock);
 	thaw_super(sbi->sb);
+	clear_sbi_flag(sbi, SBI_IS_RESIZEFS);
 	return err;
 }

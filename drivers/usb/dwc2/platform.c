@@ -121,6 +121,13 @@ static int dwc2_get_dr_mode(struct dwc2_hsotg *hsotg)
 	return 0;
 }
 
+static void __dwc2_disable_regulators(void *data)
+{
+	struct dwc2_hsotg *hsotg = data;
+
+	regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
+}
+
 static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 {
 	struct platform_device *pdev = to_platform_device(hsotg->dev);
@@ -128,6 +135,11 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(hsotg->supplies),
 				    hsotg->supplies);
+	if (ret)
+		return ret;
+
+	ret = devm_add_action_or_reset(&pdev->dev,
+				       __dwc2_disable_regulators, hsotg);
 	if (ret)
 		return ret;
 
@@ -142,9 +154,9 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 	} else if (hsotg->plat && hsotg->plat->phy_init) {
 		ret = hsotg->plat->phy_init(pdev, hsotg->plat->phy_type);
 	} else {
-		ret = phy_init(hsotg->phy);
+		ret = phy_power_on(hsotg->phy);
 		if (ret == 0)
-			ret = phy_power_on(hsotg->phy);
+			ret = phy_init(hsotg->phy);
 	}
 
 	return ret;
@@ -176,9 +188,9 @@ static int __dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	} else if (hsotg->plat && hsotg->plat->phy_exit) {
 		ret = hsotg->plat->phy_exit(pdev, hsotg->plat->phy_type);
 	} else {
-		ret = phy_power_off(hsotg->phy);
+		ret = phy_exit(hsotg->phy);
 		if (ret == 0)
-			ret = phy_exit(hsotg->phy);
+			ret = phy_power_off(hsotg->phy);
 	}
 	if (ret)
 		return ret;
@@ -186,7 +198,7 @@ static int __dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	if (hsotg->clk)
 		clk_disable_unprepare(hsotg->clk);
 
-	return regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
+	return 0;
 }
 
 /**
@@ -205,11 +217,6 @@ int dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	return ret;
 }
 
-static void dwc2_reset_control_assert(void *data)
-{
-	reset_control_assert(data);
-}
-
 static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 {
 	int i, ret;
@@ -222,10 +229,6 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 	}
 
 	reset_control_deassert(hsotg->reset);
-	ret = devm_add_action_or_reset(hsotg->dev, dwc2_reset_control_assert,
-				       hsotg->reset);
-	if (ret)
-		return ret;
 
 	hsotg->reset_ecc = devm_reset_control_get_optional(hsotg->dev, "dwc2-ecc");
 	if (IS_ERR(hsotg->reset_ecc)) {
@@ -235,10 +238,6 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 	}
 
 	reset_control_deassert(hsotg->reset_ecc);
-	ret = devm_add_action_or_reset(hsotg->dev, dwc2_reset_control_assert,
-				       hsotg->reset_ecc);
-	if (ret)
-		return ret;
 
 	/*
 	 * Attempt to find a generic PHY, then look for an old style
@@ -365,7 +364,10 @@ static int dwc2_driver_remove(struct platform_device *dev)
 	if (hsotg->ll_hw_enabled)
 		dwc2_lowlevel_hw_disable(hsotg);
 
-	return 0;
+	reset_control_assert(hsotg->reset);
+	reset_control_assert(hsotg->reset_ecc);
+
+	return ret;
 }
 
 /**
@@ -573,9 +575,6 @@ static int dwc2_driver_probe(struct platform_device *dev)
 		ggpio |= GGPIO_STM32_OTG_GCCFG_IDEN;
 		ggpio |= GGPIO_STM32_OTG_GCCFG_VBDEN;
 		dwc2_writel(hsotg, ggpio, GGPIO);
-
-		/* ID/VBUS detection startup time */
-		usleep_range(5000, 7000);
 	}
 
 	retval = dwc2_drd_init(hsotg);
@@ -656,7 +655,7 @@ error_init:
 	if (hsotg->params.activate_stm_id_vb_detection)
 		regulator_disable(hsotg->usb33d);
 error:
-	if (hsotg->ll_hw_enabled)
+	if (hsotg->dr_mode != USB_DR_MODE_PERIPHERAL)
 		dwc2_lowlevel_hw_disable(hsotg);
 	return retval;
 }

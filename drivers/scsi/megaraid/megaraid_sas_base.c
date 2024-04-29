@@ -263,13 +263,13 @@ u32 megasas_readl(struct megasas_instance *instance,
 	 * Fusion registers could intermittently return all zeroes.
 	 * This behavior is transient in nature and subsequent reads will
 	 * return valid value. As a workaround in driver, retry readl for
-	 * up to thirty times until a non-zero value is read.
+	 * upto three times until a non-zero value is read.
 	 */
 	if (instance->adapter_type == AERO_SERIES) {
 		do {
 			ret_val = readl(addr);
 			i++;
-		} while (ret_val == 0 && i < 30);
+		} while (ret_val == 0 && i < 3);
 		return ret_val;
 	} else {
 		return readl(addr);
@@ -2126,9 +2126,6 @@ static int megasas_slave_alloc(struct scsi_device *sdev)
 			goto scan_target;
 		}
 		return -ENXIO;
-	} else if (!MEGASAS_IS_LUN_VALID(sdev)) {
-		sdev_printk(KERN_INFO, sdev, "%s: invalid LUN\n", __func__);
-		return -ENXIO;
 	}
 
 scan_target:
@@ -2159,10 +2156,6 @@ static void megasas_slave_destroy(struct scsi_device *sdev)
 	instance = megasas_lookup_instance(sdev->host->host_no);
 
 	if (MEGASAS_IS_LOGICAL(sdev)) {
-		if (!MEGASAS_IS_LUN_VALID(sdev)) {
-			sdev_printk(KERN_INFO, sdev, "%s: invalid LUN\n", __func__);
-			return;
-		}
 		ld_tgt_id = MEGASAS_TARGET_ID(sdev);
 		instance->ld_tgtid_status[ld_tgt_id] = LD_TARGET_ID_DELETED;
 		if (megasas_dbg_lvl & LD_PD_DEBUG)
@@ -3196,9 +3189,6 @@ static int megasas_map_queues(struct Scsi_Host *shost)
 	qoff += map->nr_queues;
 	offset += map->nr_queues;
 
-	/* we never use READ queue, so can't cheat blk-mq */
-	shost->tag_set.map[HCTX_TYPE_READ].nr_queues = 0;
-
 	/* Setup Poll hctx */
 	map = &shost->tag_set.map[HCTX_TYPE_POLL];
 	map->nr_queues = instance->iopoll_q_count;
@@ -3275,13 +3265,14 @@ fw_crash_buffer_store(struct device *cdev,
 	struct megasas_instance *instance =
 		(struct megasas_instance *) shost->hostdata;
 	int val = 0;
+	unsigned long flags;
 
 	if (kstrtoint(buf, 0, &val) != 0)
 		return -EINVAL;
 
-	mutex_lock(&instance->crashdump_lock);
+	spin_lock_irqsave(&instance->crashdump_lock, flags);
 	instance->fw_crash_buffer_offset = val;
-	mutex_unlock(&instance->crashdump_lock);
+	spin_unlock_irqrestore(&instance->crashdump_lock, flags);
 	return strlen(buf);
 }
 
@@ -3296,23 +3287,24 @@ fw_crash_buffer_show(struct device *cdev,
 	unsigned long dmachunk = CRASH_DMA_BUF_SIZE;
 	unsigned long chunk_left_bytes;
 	unsigned long src_addr;
+	unsigned long flags;
 	u32 buff_offset;
 
-	mutex_lock(&instance->crashdump_lock);
+	spin_lock_irqsave(&instance->crashdump_lock, flags);
 	buff_offset = instance->fw_crash_buffer_offset;
-	if (!instance->crash_dump_buf ||
+	if (!instance->crash_dump_buf &&
 		!((instance->fw_crash_state == AVAILABLE) ||
 		(instance->fw_crash_state == COPYING))) {
 		dev_err(&instance->pdev->dev,
 			"Firmware crash dump is not available\n");
-		mutex_unlock(&instance->crashdump_lock);
+		spin_unlock_irqrestore(&instance->crashdump_lock, flags);
 		return -EINVAL;
 	}
 
 	if (buff_offset > (instance->fw_crash_buffer_size * dmachunk)) {
 		dev_err(&instance->pdev->dev,
 			"Firmware crash dump offset is out of range\n");
-		mutex_unlock(&instance->crashdump_lock);
+		spin_unlock_irqrestore(&instance->crashdump_lock, flags);
 		return 0;
 	}
 
@@ -3324,7 +3316,7 @@ fw_crash_buffer_show(struct device *cdev,
 	src_addr = (unsigned long)instance->crash_buf[buff_offset / dmachunk] +
 		(buff_offset % dmachunk);
 	memcpy(buf, (void *)src_addr, size);
-	mutex_unlock(&instance->crashdump_lock);
+	spin_unlock_irqrestore(&instance->crashdump_lock, flags);
 
 	return size;
 }
@@ -3349,6 +3341,7 @@ fw_crash_state_store(struct device *cdev,
 	struct megasas_instance *instance =
 		(struct megasas_instance *) shost->hostdata;
 	int val = 0;
+	unsigned long flags;
 
 	if (kstrtoint(buf, 0, &val) != 0)
 		return -EINVAL;
@@ -3362,9 +3355,9 @@ fw_crash_state_store(struct device *cdev,
 	instance->fw_crash_state = val;
 
 	if ((val == COPIED) || (val == COPY_ERROR)) {
-		mutex_lock(&instance->crashdump_lock);
+		spin_lock_irqsave(&instance->crashdump_lock, flags);
 		megasas_free_host_crash_buffer(instance);
-		mutex_unlock(&instance->crashdump_lock);
+		spin_unlock_irqrestore(&instance->crashdump_lock, flags);
 		if (val == COPY_ERROR)
 			dev_info(&instance->pdev->dev, "application failed to "
 				"copy Firmware crash dump\n");
@@ -7429,7 +7422,7 @@ static inline void megasas_init_ctrl_params(struct megasas_instance *instance)
 	init_waitqueue_head(&instance->int_cmd_wait_q);
 	init_waitqueue_head(&instance->abort_cmd_wait_q);
 
-	mutex_init(&instance->crashdump_lock);
+	spin_lock_init(&instance->crashdump_lock);
 	spin_lock_init(&instance->mfi_pool_lock);
 	spin_lock_init(&instance->hba_lock);
 	spin_lock_init(&instance->stream_lock);

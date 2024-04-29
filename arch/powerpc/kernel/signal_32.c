@@ -258,9 +258,8 @@ static void prepare_save_user_regs(int ctx_has_vsx_region)
 #endif
 }
 
-static __always_inline int
-__unsafe_save_user_regs(struct pt_regs *regs, struct mcontext __user *frame,
-			struct mcontext __user *tm_frame, int ctx_has_vsx_region)
+static int __unsafe_save_user_regs(struct pt_regs *regs, struct mcontext __user *frame,
+				   struct mcontext __user *tm_frame, int ctx_has_vsx_region)
 {
 	unsigned long msr = regs->msr;
 
@@ -359,9 +358,8 @@ static void prepare_save_tm_user_regs(void)
 		current->thread.ckvrsave = mfspr(SPRN_VRSAVE);
 }
 
-static __always_inline int
-save_tm_user_regs_unsafe(struct pt_regs *regs, struct mcontext __user *frame,
-			 struct mcontext __user *tm_frame, unsigned long msr)
+static int save_tm_user_regs_unsafe(struct pt_regs *regs, struct mcontext __user *frame,
+				    struct mcontext __user *tm_frame, unsigned long msr)
 {
 	/* Save both sets of general registers */
 	unsafe_save_general_regs(&current->thread.ckpt_regs, frame, failed);
@@ -440,9 +438,8 @@ failed:
 #else
 static void prepare_save_tm_user_regs(void) { }
 
-static __always_inline int
-save_tm_user_regs_unsafe(struct pt_regs *regs, struct mcontext __user *frame,
-			 struct mcontext __user *tm_frame, unsigned long msr)
+static int save_tm_user_regs_unsafe(struct pt_regs *regs, struct mcontext __user *frame,
+				    struct mcontext __user *tm_frame, unsigned long msr)
 {
 	return 0;
 }
@@ -1051,7 +1048,7 @@ SYSCALL_DEFINE3(swapcontext, struct ucontext __user *, old_ctx,
 	if (new_ctx == NULL)
 		return 0;
 	if (!access_ok(new_ctx, ctx_size) ||
-	    fault_in_readable((char __user *)new_ctx, ctx_size))
+	    fault_in_pages_readable((u8 __user *)new_ctx, ctx_size))
 		return -EFAULT;
 
 	/*
@@ -1065,10 +1062,8 @@ SYSCALL_DEFINE3(swapcontext, struct ucontext __user *, old_ctx,
 	 * or if another thread unmaps the region containing the context.
 	 * We kill the task with a SIGSEGV in this situation.
 	 */
-	if (do_setcontext(new_ctx, regs, 0)) {
-		force_exit_sig(SIGSEGV);
-		return -EFAULT;
-	}
+	if (do_setcontext(new_ctx, regs, 0))
+		do_exit(SIGSEGV);
 
 	set_thread_flag(TIF_RESTOREALL);
 	return 0;
@@ -1242,7 +1237,7 @@ SYSCALL_DEFINE3(debug_setcontext, struct ucontext __user *, ctx,
 #endif
 
 	if (!access_ok(ctx, sizeof(*ctx)) ||
-	    fault_in_readable((char __user *)ctx, sizeof(*ctx)))
+	    fault_in_pages_readable((u8 __user *)ctx, sizeof(*ctx)))
 		return -EFAULT;
 
 	/*

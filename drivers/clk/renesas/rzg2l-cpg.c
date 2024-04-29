@@ -11,7 +11,6 @@
  * Copyright (C) 2015 Renesas Electronics Corp.
  */
 
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clk/renesas.h>
@@ -38,13 +37,14 @@
 #define WARN_DEBUG(x)	do { } while (0)
 #endif
 
+#define DIV_RSMASK(v, s, m)	((v >> s) & m)
 #define GET_SHIFT(val)		((val >> 12) & 0xff)
 #define GET_WIDTH(val)		((val >> 8) & 0xf)
 
-#define KDIV(val)		((s16)FIELD_GET(GENMASK(31, 16), val))
-#define MDIV(val)		FIELD_GET(GENMASK(15, 6), val)
-#define PDIV(val)		FIELD_GET(GENMASK(5, 0), val)
-#define SDIV(val)		FIELD_GET(GENMASK(2, 0), val)
+#define KDIV(val)		DIV_RSMASK(val, 16, 0xffff)
+#define MDIV(val)		DIV_RSMASK(val, 6, 0x3ff)
+#define PDIV(val)		DIV_RSMASK(val, 0, 0x3f)
+#define SDIV(val)		DIV_RSMASK(val, 0, 0x7)
 
 #define CLK_ON_R(reg)		(reg)
 #define CLK_MON_R(reg)		(0x180 + (reg))
@@ -146,18 +146,18 @@ static unsigned long rzg2l_cpg_pll_clk_recalc_rate(struct clk_hw *hw,
 	struct pll_clk *pll_clk = to_pll(hw);
 	struct rzg2l_cpg_priv *priv = pll_clk->priv;
 	unsigned int val1, val2;
-	u64 rate;
+	unsigned int mult = 1;
+	unsigned int div = 1;
 
 	if (pll_clk->type != CLK_TYPE_SAM_PLL)
 		return parent_rate;
 
 	val1 = readl(priv->base + GET_REG_SAMPLL_CLK1(pll_clk->conf));
 	val2 = readl(priv->base + GET_REG_SAMPLL_CLK2(pll_clk->conf));
+	mult = MDIV(val1) + KDIV(val1) / 65536;
+	div = PDIV(val1) * (1 << SDIV(val2));
 
-	rate = mul_u64_u32_shr(parent_rate, (MDIV(val1) << 16) + KDIV(val1),
-			       16 + SDIV(val2));
-
-	return DIV_ROUND_CLOSEST_ULL(rate, PDIV(val1));
+	return DIV_ROUND_CLOSEST_ULL((u64)parent_rate * mult, div);
 }
 
 static const struct clk_ops rzg2l_cpg_pll_ops = {
@@ -638,16 +638,10 @@ static void rzg2l_cpg_detach_dev(struct generic_pm_domain *unused, struct device
 		pm_clk_destroy(dev);
 }
 
-static void rzg2l_cpg_genpd_remove(void *data)
-{
-	pm_genpd_remove(data);
-}
-
 static int __init rzg2l_cpg_add_clk_domain(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	struct generic_pm_domain *genpd;
-	int ret;
 
 	genpd = devm_kzalloc(dev, sizeof(*genpd), GFP_KERNEL);
 	if (!genpd)
@@ -658,15 +652,10 @@ static int __init rzg2l_cpg_add_clk_domain(struct device *dev)
 		       GENPD_FLAG_ACTIVE_WAKEUP;
 	genpd->attach_dev = rzg2l_cpg_attach_dev;
 	genpd->detach_dev = rzg2l_cpg_detach_dev;
-	ret = pm_genpd_init(genpd, &pm_domain_always_on_gov, false);
-	if (ret)
-		return ret;
+	pm_genpd_init(genpd, &pm_domain_always_on_gov, false);
 
-	ret = devm_add_action_or_reset(dev, rzg2l_cpg_genpd_remove, genpd);
-	if (ret)
-		return ret;
-
-	return of_genpd_add_provider_simple(np, genpd);
+	of_genpd_add_provider_simple(np, genpd);
+	return 0;
 }
 
 static int __init rzg2l_cpg_probe(struct platform_device *pdev)

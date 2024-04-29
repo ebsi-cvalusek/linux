@@ -372,18 +372,10 @@ int
 show_cpuinfo (struct seq_file *m, void *v)
 {
 	unsigned long cpu;
-	char cpu_name[60], *p;
-
-	/* strip PA path from CPU name to not confuse lscpu */
-	strlcpy(cpu_name, per_cpu(cpu_data, 0).dev->name, sizeof(cpu_name));
-	p = strrchr(cpu_name, '[');
-	if (p)
-		*(--p) = 0;
 
 	for_each_online_cpu(cpu) {
-#ifdef CONFIG_SMP
 		const struct cpuinfo_parisc *cpuinfo = &per_cpu(cpu_data, cpu);
-
+#ifdef CONFIG_SMP
 		if (0 == cpuinfo->hpa)
 			continue;
 #endif
@@ -426,9 +418,11 @@ show_cpuinfo (struct seq_file *m, void *v)
 		}
 		seq_printf(m, " (0x%02lx)\n", boot_cpu_data.pdc.capabilities);
 
-		seq_printf(m, "model\t\t: %s - %s\n",
+		seq_printf(m, "model\t\t: %s\n"
+				"model name\t: %s\n",
 				 boot_cpu_data.pdc.sys_model_name,
-				 cpu_name);
+				 cpuinfo->dev ?
+				 cpuinfo->dev->name : "Unknown");
 
 		seq_printf(m, "hversion\t: 0x%08x\n"
 			        "sversion\t: 0x%08x\n",

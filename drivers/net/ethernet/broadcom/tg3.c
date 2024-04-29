@@ -224,7 +224,6 @@ MODULE_AUTHOR("David S. Miller (davem@redhat.com) and Jeff Garzik (jgarzik@pobox
 MODULE_DESCRIPTION("Broadcom Tigon3 ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE(FIRMWARE_TG3);
-MODULE_FIRMWARE(FIRMWARE_TG357766);
 MODULE_FIRMWARE(FIRMWARE_TG3TSO);
 MODULE_FIRMWARE(FIRMWARE_TG3TSO5);
 
@@ -6448,14 +6447,6 @@ static void tg3_dump_state(struct tg3 *tp)
 	int i;
 	u32 *regs;
 
-	/* If it is a PCI error, all registers will be 0xffff,
-	 * we don't dump them out, just report the error and return
-	 */
-	if (tp->pdev->error_state != pci_channel_io_normal) {
-		netdev_err(tp->dev, "PCI channel ERROR!\n");
-		return;
-	}
-
 	regs = kzalloc(TG3_REG_BLK_SIZE, GFP_ATOMIC);
 	if (!regs)
 		return;
@@ -6862,7 +6853,7 @@ static int tg3_rx(struct tg3_napi *tnapi, int budget)
 				       desc_idx, *post_ptr);
 		drop_it_no_recycle:
 			/* Other statistics kept track of by card. */
-			tnapi->rx_dropped++;
+			tp->rx_dropped++;
 			goto next_pkt;
 		}
 
@@ -7888,10 +7879,8 @@ static int tg3_tso_bug(struct tg3 *tp, struct tg3_napi *tnapi,
 
 	segs = skb_gso_segment(skb, tp->dev->features &
 				    ~(NETIF_F_TSO | NETIF_F_TSO6));
-	if (IS_ERR(segs) || !segs) {
-		tnapi->tx_dropped++;
+	if (IS_ERR(segs) || !segs)
 		goto tg3_tso_bug_end;
-	}
 
 	skb_list_walk_safe(segs, seg, next) {
 		skb_mark_not_on_list(seg);
@@ -8162,7 +8151,7 @@ dma_error:
 drop:
 	dev_kfree_skb_any(skb);
 drop_nofree:
-	tnapi->tx_dropped++;
+	tp->tx_dropped++;
 	return NETDEV_TX_OK;
 }
 
@@ -9341,7 +9330,7 @@ static void __tg3_set_rx_mode(struct net_device *);
 /* tp->lock is held. */
 static int tg3_halt(struct tg3 *tp, int kind, bool silent)
 {
-	int err, i;
+	int err;
 
 	tg3_stop_fw(tp);
 
@@ -9362,13 +9351,6 @@ static int tg3_halt(struct tg3 *tp, int kind, bool silent)
 
 		/* And make sure the next sample is new data */
 		memset(tp->hw_stats, 0, sizeof(struct tg3_hw_stats));
-
-		for (i = 0; i < TG3_IRQ_MAX_VECS; ++i) {
-			struct tg3_napi *tnapi = &tp->napi[i];
-
-			tnapi->rx_dropped = 0;
-			tnapi->tx_dropped = 0;
-		}
 	}
 
 	return err;
@@ -11194,8 +11176,7 @@ static void tg3_reset_task(struct work_struct *work)
 	rtnl_lock();
 	tg3_full_lock(tp, 0);
 
-	if (tp->pcierr_recovery || !netif_running(tp->dev) ||
-	    tp->pdev->error_state != pci_channel_io_normal) {
+	if (!netif_running(tp->dev)) {
 		tg3_flag_clear(tp, RESET_TASK_PENDING);
 		tg3_full_unlock(tp);
 		rtnl_unlock();
@@ -11924,9 +11905,6 @@ static void tg3_get_nstats(struct tg3 *tp, struct rtnl_link_stats64 *stats)
 {
 	struct rtnl_link_stats64 *old_stats = &tp->net_stats_prev;
 	struct tg3_hw_stats *hw_stats = tp->hw_stats;
-	unsigned long rx_dropped;
-	unsigned long tx_dropped;
-	int i;
 
 	stats->rx_packets = old_stats->rx_packets +
 		get_stat64(&hw_stats->rx_ucast_packets) +
@@ -11973,26 +11951,8 @@ static void tg3_get_nstats(struct tg3 *tp, struct rtnl_link_stats64 *stats)
 	stats->rx_missed_errors = old_stats->rx_missed_errors +
 		get_stat64(&hw_stats->rx_discards);
 
-	/* Aggregate per-queue counters. The per-queue counters are updated
-	 * by a single writer, race-free. The result computed by this loop
-	 * might not be 100% accurate (counters can be updated in the middle of
-	 * the loop) but the next tg3_get_nstats() will recompute the current
-	 * value so it is acceptable.
-	 *
-	 * Note that these counters wrap around at 4G on 32bit machines.
-	 */
-	rx_dropped = (unsigned long)(old_stats->rx_dropped);
-	tx_dropped = (unsigned long)(old_stats->tx_dropped);
-
-	for (i = 0; i < tp->irq_cnt; i++) {
-		struct tg3_napi *tnapi = &tp->napi[i];
-
-		rx_dropped += tnapi->rx_dropped;
-		tx_dropped += tnapi->tx_dropped;
-	}
-
-	stats->rx_dropped = rx_dropped;
-	stats->tx_dropped = tx_dropped;
+	stats->rx_dropped = tp->rx_dropped;
+	stats->tx_dropped = tp->tx_dropped;
 }
 
 static int tg3_get_regs_len(struct net_device *dev)
@@ -18118,10 +18078,7 @@ static void tg3_shutdown(struct pci_dev *pdev)
 	struct net_device *dev = pci_get_drvdata(pdev);
 	struct tg3 *tp = netdev_priv(dev);
 
-	tg3_reset_task_cancel(tp);
-
 	rtnl_lock();
-
 	netif_device_detach(dev);
 
 	if (netif_running(dev))
@@ -18131,8 +18088,6 @@ static void tg3_shutdown(struct pci_dev *pdev)
 		tg3_power_down(tp);
 
 	rtnl_unlock();
-
-	pci_disable_device(pdev);
 }
 
 /**
@@ -18152,9 +18107,6 @@ static pci_ers_result_t tg3_io_error_detected(struct pci_dev *pdev,
 
 	netdev_info(netdev, "PCI I/O error detected\n");
 
-	/* Want to make sure that the reset task doesn't run */
-	tg3_reset_task_cancel(tp);
-
 	rtnl_lock();
 
 	/* Could be second call or maybe we don't have netdev yet */
@@ -18170,6 +18122,9 @@ static pci_ers_result_t tg3_io_error_detected(struct pci_dev *pdev,
 	tg3_netif_stop(tp);
 
 	tg3_timer_stop(tp);
+
+	/* Want to make sure that the reset task doesn't run */
+	tg3_reset_task_cancel(tp);
 
 	netif_device_detach(netdev);
 

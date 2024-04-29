@@ -146,20 +146,16 @@ nfsd3_proc_read(struct svc_rqst *rqstp)
 {
 	struct nfsd3_readargs *argp = rqstp->rq_argp;
 	struct nfsd3_readres *resp = rqstp->rq_resp;
+	u32 max_blocksize = svc_max_payload(rqstp);
 	unsigned int len;
 	int v;
+
+	argp->count = min_t(u32, argp->count, max_blocksize);
 
 	dprintk("nfsd: READ(3) %s %lu bytes at %Lu\n",
 				SVCFH_fmt(&argp->fh),
 				(unsigned long) argp->count,
 				(unsigned long long) argp->offset);
-
-	argp->count = min_t(u32, argp->count, svc_max_payload(rqstp));
-	argp->count = min_t(u32, argp->count, rqstp->rq_res.buflen);
-	if (argp->offset > (u64)OFFSET_MAX)
-		argp->offset = (u64)OFFSET_MAX;
-	if (argp->offset + argp->count > (u64)OFFSET_MAX)
-		argp->count = (u64)OFFSET_MAX - argp->offset;
 
 	v = 0;
 	len = argp->count;
@@ -203,19 +199,19 @@ nfsd3_proc_write(struct svc_rqst *rqstp)
 				(unsigned long long) argp->offset,
 				argp->stable? " stable" : "");
 
-	resp->status = nfserr_fbig;
-	if (argp->offset > (u64)OFFSET_MAX ||
-	    argp->offset + argp->len > (u64)OFFSET_MAX)
-		return rpc_success;
-
 	fh_copy(&resp->fh, &argp->fh);
 	resp->committed = argp->stable;
-	nvecs = svc_fill_write_vector(rqstp, &argp->payload);
-
+	nvecs = svc_fill_write_vector(rqstp, rqstp->rq_arg.pages,
+				      &argp->first, cnt);
+	if (!nvecs) {
+		resp->status = nfserr_io;
+		goto out;
+	}
 	resp->status = nfsd_write(rqstp, &resp->fh, argp->offset,
 				  rqstp->rq_vec, nvecs, &cnt,
 				  resp->committed, resp->verf);
 	resp->count = cnt;
+out:
 	return rpc_success;
 }
 
@@ -443,20 +439,22 @@ nfsd3_proc_link(struct svc_rqst *rqstp)
 
 static void nfsd3_init_dirlist_pages(struct svc_rqst *rqstp,
 				     struct nfsd3_readdirres *resp,
-				     u32 count)
+				     int count)
 {
 	struct xdr_buf *buf = &resp->dirlist;
 	struct xdr_stream *xdr = &resp->xdr;
-	unsigned int sendbuf = min_t(unsigned int, rqstp->rq_res.buflen,
-				     svc_max_payload(rqstp));
+
+	count = min_t(u32, count, svc_max_payload(rqstp));
 
 	memset(buf, 0, sizeof(*buf));
 
 	/* Reserve room for the NULL ptr & eof flag (-2 words) */
-	buf->buflen = clamp(count, (u32)(XDR_UNIT * 2), sendbuf);
-	buf->buflen -= XDR_UNIT * 2;
+	buf->buflen = count - XDR_UNIT * 2;
 	buf->pages = rqstp->rq_next_page;
-	rqstp->rq_next_page += (buf->buflen + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	while (count > 0) {
+		rqstp->rq_next_page++;
+		count -= PAGE_SIZE;
+	}
 
 	/* This is xdr_init_encode(), but it assumes that
 	 * the head kvec has already been consumed. */
@@ -465,7 +463,7 @@ static void nfsd3_init_dirlist_pages(struct svc_rqst *rqstp,
 	xdr->page_ptr = buf->pages;
 	xdr->iov = NULL;
 	xdr->p = page_address(*buf->pages);
-	xdr->end = (void *)xdr->p + min_t(u32, buf->buflen, PAGE_SIZE);
+	xdr->end = xdr->p + (PAGE_SIZE >> 2);
 	xdr->rqst = NULL;
 }
 
@@ -661,9 +659,15 @@ nfsd3_proc_commit(struct svc_rqst *rqstp)
 				argp->count,
 				(unsigned long long) argp->offset);
 
+	if (argp->offset > NFS_OFFSET_MAX) {
+		resp->status = nfserr_inval;
+		goto out;
+	}
+
 	fh_copy(&resp->fh, &argp->fh);
 	resp->status = nfsd_commit(rqstp, &resp->fh, argp->offset,
 				   argp->count, resp->verf);
+out:
 	return rpc_success;
 }
 

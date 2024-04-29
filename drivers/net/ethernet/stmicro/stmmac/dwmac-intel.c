@@ -298,11 +298,6 @@ static void get_arttime(struct mii_bus *mii, int intel_adhoc_addr,
 	*art_time = ns;
 }
 
-static int stmmac_cross_ts_isr(struct stmmac_priv *priv)
-{
-	return (readl(priv->ioaddr + GMAC_INT_STATUS) & GMAC_INT_TSIE);
-}
-
 static int intel_crosststamp(ktime_t *device,
 			     struct system_counterval_t *system,
 			     void *ctx)
@@ -318,6 +313,8 @@ static int intel_crosststamp(ktime_t *device,
 	u32 num_snapshot;
 	u32 gpio_value;
 	u32 acr_value;
+	int ret;
+	u32 v;
 	int i;
 
 	if (!boot_cpu_has(X86_FEATURE_ART))
@@ -330,8 +327,6 @@ static int intel_crosststamp(ktime_t *device,
 	 */
 	if (priv->plat->ext_snapshot_en)
 		return -EBUSY;
-
-	priv->plat->int_snapshot_en = 1;
 
 	mutex_lock(&priv->aux_ts_lock);
 	/* Enable Internal snapshot trigger */
@@ -352,7 +347,6 @@ static int intel_crosststamp(ktime_t *device,
 		break;
 	default:
 		mutex_unlock(&priv->aux_ts_lock);
-		priv->plat->int_snapshot_en = 0;
 		return -EINVAL;
 	}
 	writel(acr_value, ptpaddr + PTP_ACR);
@@ -374,12 +368,13 @@ static int intel_crosststamp(ktime_t *device,
 	gpio_value |= GMAC_GPO1;
 	writel(gpio_value, ioaddr + GMAC_GPIO_STATUS);
 
-	/* Time sync done Indication - Interrupt method */
-	if (!wait_event_interruptible_timeout(priv->tstamp_busy_wait,
-					      stmmac_cross_ts_isr(priv),
-					      HZ / 100)) {
-		priv->plat->int_snapshot_en = 0;
-		return -ETIMEDOUT;
+	/* Poll for time sync operation done */
+	ret = readl_poll_timeout(priv->ioaddr + GMAC_INT_STATUS, v,
+				 (v & GMAC_INT_TSIE), 100, 10000);
+
+	if (ret == -ETIMEDOUT) {
+		pr_err("%s: Wait for time sync operation timeout\n", __func__);
+		return ret;
 	}
 
 	num_snapshot = (readl(ioaddr + GMAC_TIMESTAMP_STATUS) &
@@ -397,7 +392,6 @@ static int intel_crosststamp(ktime_t *device,
 	}
 
 	system->cycles *= intel_priv->crossts_adj;
-	priv->plat->int_snapshot_en = 0;
 
 	return 0;
 }
@@ -460,7 +454,6 @@ static int intel_mgbe_common_data(struct pci_dev *pdev,
 	plat->has_gmac4 = 1;
 	plat->force_sf_dma_mode = 0;
 	plat->tso_en = 1;
-	plat->sph_disable = 1;
 
 	/* Multiplying factor to the clk_eee_i clock time
 	 * period to make it closer to 100 ns. This value
@@ -582,7 +575,6 @@ static int intel_mgbe_common_data(struct pci_dev *pdev,
 
 	plat->has_crossts = true;
 	plat->crosststamp = intel_crosststamp;
-	plat->int_snapshot_en = 0;
 
 	/* Setup MSI vector offset specific to Intel mGbE controller */
 	plat->msi_mac_vec = 29;
@@ -600,6 +592,7 @@ static int ehl_common_data(struct pci_dev *pdev,
 {
 	plat->rx_queues_to_use = 8;
 	plat->tx_queues_to_use = 8;
+	plat->clk_ptp_rate = 200000000;
 	plat->use_phy_wol = 1;
 
 	plat->safety_feat_cfg->tsoee = 1;
@@ -624,8 +617,6 @@ static int ehl_sgmii_data(struct pci_dev *pdev,
 	plat->serdes_powerup = intel_serdes_powerup;
 	plat->serdes_powerdown = intel_serdes_powerdown;
 
-	plat->clk_ptp_rate = 204800000;
-
 	return ehl_common_data(pdev, plat);
 }
 
@@ -638,8 +629,6 @@ static int ehl_rgmii_data(struct pci_dev *pdev,
 {
 	plat->bus_id = 1;
 	plat->phy_interface = PHY_INTERFACE_MODE_RGMII;
-
-	plat->clk_ptp_rate = 204800000;
 
 	return ehl_common_data(pdev, plat);
 }
@@ -656,8 +645,6 @@ static int ehl_pse0_common_data(struct pci_dev *pdev,
 	intel_priv->is_pse = true;
 	plat->bus_id = 2;
 	plat->addr64 = 32;
-
-	plat->clk_ptp_rate = 200000000;
 
 	intel_mgbe_pse_crossts_adj(intel_priv, EHL_PSE_ART_MHZ);
 
@@ -698,8 +685,6 @@ static int ehl_pse1_common_data(struct pci_dev *pdev,
 	plat->bus_id = 3;
 	plat->addr64 = 32;
 
-	plat->clk_ptp_rate = 200000000;
-
 	intel_mgbe_pse_crossts_adj(intel_priv, EHL_PSE_ART_MHZ);
 
 	return ehl_common_data(pdev, plat);
@@ -735,8 +720,7 @@ static int tgl_common_data(struct pci_dev *pdev,
 {
 	plat->rx_queues_to_use = 6;
 	plat->tx_queues_to_use = 4;
-	plat->clk_ptp_rate = 204800000;
-	plat->speed_mode_2500 = intel_speed_mode_2500;
+	plat->clk_ptp_rate = 200000000;
 
 	plat->safety_feat_cfg->tsoee = 1;
 	plat->safety_feat_cfg->mrxpee = 0;
@@ -756,6 +740,7 @@ static int tgl_sgmii_phy0_data(struct pci_dev *pdev,
 {
 	plat->bus_id = 1;
 	plat->phy_interface = PHY_INTERFACE_MODE_SGMII;
+	plat->speed_mode_2500 = intel_speed_mode_2500;
 	plat->serdes_powerup = intel_serdes_powerup;
 	plat->serdes_powerdown = intel_serdes_powerdown;
 	return tgl_common_data(pdev, plat);
@@ -770,6 +755,7 @@ static int tgl_sgmii_phy1_data(struct pci_dev *pdev,
 {
 	plat->bus_id = 2;
 	plat->phy_interface = PHY_INTERFACE_MODE_SGMII;
+	plat->speed_mode_2500 = intel_speed_mode_2500;
 	plat->serdes_powerup = intel_serdes_powerup;
 	plat->serdes_powerdown = intel_serdes_powerdown;
 	return tgl_common_data(pdev, plat);
@@ -1086,11 +1072,13 @@ static int intel_eth_pci_probe(struct pci_dev *pdev,
 
 	ret = stmmac_dvr_probe(&pdev->dev, plat, &res);
 	if (ret) {
-		goto err_alloc_irq;
+		goto err_dvr_probe;
 	}
 
 	return 0;
 
+err_dvr_probe:
+	pci_free_irq_vectors(pdev);
 err_alloc_irq:
 	clk_disable_unprepare(plat->stmmac_clk);
 	clk_unregister_fixed_rate(plat->stmmac_clk);
@@ -1111,7 +1099,6 @@ static void intel_eth_pci_remove(struct pci_dev *pdev)
 
 	stmmac_dvr_remove(&pdev->dev);
 
-	clk_disable_unprepare(priv->plat->stmmac_clk);
 	clk_unregister_fixed_rate(priv->plat->stmmac_clk);
 
 	pcim_iounmap_regions(pdev, BIT(0));

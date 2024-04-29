@@ -11,9 +11,7 @@
 #include <asm/kprobes.h>
 #include <asm/cacheflush.h>
 #include <asm/fixmap.h>
-#include <asm/ftrace.h>
 #include <asm/patch.h>
-#include <asm/sections.h>
 
 struct patch_insn {
 	void *addr;
@@ -21,17 +19,7 @@ struct patch_insn {
 	atomic_t cpu_count;
 };
 
-int riscv_patch_in_stop_machine = false;
-
 #ifdef CONFIG_MMU
-
-static inline bool is_kernel_exittext(uintptr_t addr)
-{
-	return system_state < SYSTEM_RUNNING &&
-		addr >= (uintptr_t)__exittext_begin &&
-		addr < (uintptr_t)__exittext_end;
-}
-
 /*
  * The fix_to_virt(, idx) needs a const value (not a dynamic variable of
  * reg-a0) or BUILD_BUG_ON failed with "idx >= __end_of_fixed_addresses".
@@ -42,7 +30,7 @@ static __always_inline void *patch_map(void *addr, const unsigned int fixmap)
 	uintptr_t uintaddr = (uintptr_t) addr;
 	struct page *page;
 
-	if (core_kernel_text(uintaddr) || is_kernel_exittext(uintaddr))
+	if (core_kernel_text(uintaddr))
 		page = phys_to_page(__pa_symbol(addr));
 	else if (IS_ENABLED(CONFIG_STRICT_MODULE_RWX))
 		page = vmalloc_to_page(addr);
@@ -71,15 +59,8 @@ static int patch_insn_write(void *addr, const void *insn, size_t len)
 	 * Before reaching here, it was expected to lock the text_mutex
 	 * already, so we don't need to give another lock here and could
 	 * ensure that it was safe between each cores.
-	 *
-	 * We're currently using stop_machine() for ftrace & kprobes, and while
-	 * that ensures text_mutex is held before installing the mappings it
-	 * does not ensure text_mutex is held by the calling thread.  That's
-	 * safe but triggers a lockdep failure, so just elide it for that
-	 * specific case.
 	 */
-	if (!riscv_patch_in_stop_machine)
-		lockdep_assert_held(&text_mutex);
+	lockdep_assert_held(&text_mutex);
 
 	if (across_pages)
 		patch_map(addr + len, FIX_TEXT_POKE1);
@@ -123,7 +104,7 @@ static int patch_text_cb(void *data)
 	struct patch_insn *patch = data;
 	int ret = 0;
 
-	if (atomic_inc_return(&patch->cpu_count) == num_online_cpus()) {
+	if (atomic_inc_return(&patch->cpu_count) == 1) {
 		ret =
 		    patch_text_nosync(patch->addr, &patch->insn,
 					    GET_INSN_LENGTH(patch->insn));
@@ -140,25 +121,13 @@ NOKPROBE_SYMBOL(patch_text_cb);
 
 int patch_text(void *addr, u32 insn)
 {
-	int ret;
 	struct patch_insn patch = {
 		.addr = addr,
 		.insn = insn,
 		.cpu_count = ATOMIC_INIT(0),
 	};
 
-	/*
-	 * kprobes takes text_mutex, before calling patch_text(), but as we call
-	 * calls stop_machine(), the lockdep assertion in patch_insn_write()
-	 * gets confused by the context in which the lock is taken.
-	 * Instead, ensure the lock is held before calling stop_machine(), and
-	 * set riscv_patch_in_stop_machine to skip the check in
-	 * patch_insn_write().
-	 */
-	lockdep_assert_held(&text_mutex);
-	riscv_patch_in_stop_machine = true;
-	ret = stop_machine_cpuslocked(patch_text_cb, &patch, cpu_online_mask);
-	riscv_patch_in_stop_machine = false;
-	return ret;
+	return stop_machine_cpuslocked(patch_text_cb,
+				       &patch, cpu_online_mask);
 }
 NOKPROBE_SYMBOL(patch_text);

@@ -520,11 +520,8 @@ static void rvu_block_reset(struct rvu *rvu, int blkaddr, u64 rst_reg)
 
 	rvu_write64(rvu, blkaddr, rst_reg, BIT_ULL(0));
 	err = rvu_poll_reg(rvu, blkaddr, rst_reg, BIT_ULL(63), true);
-	if (err) {
-		dev_err(rvu->dev, "HW block:%d reset timeout retrying again\n", blkaddr);
-		while (rvu_poll_reg(rvu, blkaddr, rst_reg, BIT_ULL(63), true) == -EBUSY)
-			;
-	}
+	if (err)
+		dev_err(rvu->dev, "HW block:%d reset failed\n", blkaddr);
 }
 
 static void rvu_reset_all_blocks(struct rvu *rvu)
@@ -2196,7 +2193,7 @@ static inline void rvu_afvf_mbox_up_handler(struct work_struct *work)
 }
 
 static int rvu_get_mbox_regions(struct rvu *rvu, void **mbox_addr,
-				int num, int type, unsigned long *pf_bmap)
+				int num, int type)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
 	int region;
@@ -2208,9 +2205,6 @@ static int rvu_get_mbox_regions(struct rvu *rvu, void **mbox_addr,
 	 */
 	if (type == TYPE_AFVF) {
 		for (region = 0; region < num; region++) {
-			if (!test_bit(region, pf_bmap))
-				continue;
-
 			if (hw->cap.per_pf_mbox_regs) {
 				bar4 = rvu_read64(rvu, BLKADDR_RVUM,
 						  RVU_AF_PFX_BAR4_ADDR(0)) +
@@ -2232,9 +2226,6 @@ static int rvu_get_mbox_regions(struct rvu *rvu, void **mbox_addr,
 	 * RVU_AF_PF_BAR4_ADDR register.
 	 */
 	for (region = 0; region < num; region++) {
-		if (!test_bit(region, pf_bmap))
-			continue;
-
 		if (hw->cap.per_pf_mbox_regs) {
 			bar4 = rvu_read64(rvu, BLKADDR_RVUM,
 					  RVU_AF_PFX_BAR4_ADDR(region));
@@ -2263,33 +2254,12 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 	int err = -EINVAL, i, dir, dir_up;
 	void __iomem *reg_base;
 	struct rvu_work *mwork;
-	unsigned long *pf_bmap;
 	void **mbox_regions;
 	const char *name;
-	u64 cfg;
-
-	pf_bmap = bitmap_zalloc(num, GFP_KERNEL);
-	if (!pf_bmap)
-		return -ENOMEM;
-
-	/* RVU VFs */
-	if (type == TYPE_AFVF)
-		bitmap_set(pf_bmap, 0, num);
-
-	if (type == TYPE_AFPF) {
-		/* Mark enabled PFs in bitmap */
-		for (i = 0; i < num; i++) {
-			cfg = rvu_read64(rvu, BLKADDR_RVUM, RVU_PRIV_PFX_CFG(i));
-			if (cfg & BIT_ULL(20))
-				set_bit(i, pf_bmap);
-		}
-	}
 
 	mbox_regions = kcalloc(num, sizeof(void *), GFP_KERNEL);
-	if (!mbox_regions) {
-		err = -ENOMEM;
-		goto free_bitmap;
-	}
+	if (!mbox_regions)
+		return -ENOMEM;
 
 	switch (type) {
 	case TYPE_AFPF:
@@ -2297,7 +2267,7 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 		dir = MBOX_DIR_AFPF;
 		dir_up = MBOX_DIR_AFPF_UP;
 		reg_base = rvu->afreg_base;
-		err = rvu_get_mbox_regions(rvu, mbox_regions, num, TYPE_AFPF, pf_bmap);
+		err = rvu_get_mbox_regions(rvu, mbox_regions, num, TYPE_AFPF);
 		if (err)
 			goto free_regions;
 		break;
@@ -2306,12 +2276,12 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 		dir = MBOX_DIR_PFVF;
 		dir_up = MBOX_DIR_PFVF_UP;
 		reg_base = rvu->pfreg_base;
-		err = rvu_get_mbox_regions(rvu, mbox_regions, num, TYPE_AFVF, pf_bmap);
+		err = rvu_get_mbox_regions(rvu, mbox_regions, num, TYPE_AFVF);
 		if (err)
 			goto free_regions;
 		break;
 	default:
-		goto free_regions;
+		return err;
 	}
 
 	mw->mbox_wq = alloc_workqueue(name,
@@ -2337,19 +2307,16 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 	}
 
 	err = otx2_mbox_regions_init(&mw->mbox, mbox_regions, rvu->pdev,
-				     reg_base, dir, num, pf_bmap);
+				     reg_base, dir, num);
 	if (err)
 		goto exit;
 
 	err = otx2_mbox_regions_init(&mw->mbox_up, mbox_regions, rvu->pdev,
-				     reg_base, dir_up, num, pf_bmap);
+				     reg_base, dir_up, num);
 	if (err)
 		goto exit;
 
 	for (i = 0; i < num; i++) {
-		if (!test_bit(i, pf_bmap))
-			continue;
-
 		mwork = &mw->mbox_wrk[i];
 		mwork->rvu = rvu;
 		INIT_WORK(&mwork->work, mbox_handler);
@@ -2358,7 +2325,8 @@ static int rvu_mbox_init(struct rvu *rvu, struct mbox_wq_info *mw,
 		mwork->rvu = rvu;
 		INIT_WORK(&mwork->work, mbox_up_handler);
 	}
-	goto free_regions;
+	kfree(mbox_regions);
+	return 0;
 
 exit:
 	destroy_workqueue(mw->mbox_wq);
@@ -2367,8 +2335,6 @@ unmap_regions:
 		iounmap((void __iomem *)mbox_regions[num]);
 free_regions:
 	kfree(mbox_regions);
-free_bitmap:
-	bitmap_free(pf_bmap);
 	return err;
 }
 
@@ -2435,9 +2401,10 @@ static void rvu_queue_work(struct mbox_wq_info *mw, int first,
 	}
 }
 
-static irqreturn_t rvu_mbox_pf_intr_handler(int irq, void *rvu_irq)
+static irqreturn_t rvu_mbox_intr_handler(int irq, void *rvu_irq)
 {
 	struct rvu *rvu = (struct rvu *)rvu_irq;
+	int vfs = rvu->vfs;
 	u64 intr;
 
 	intr = rvu_read64(rvu, BLKADDR_RVUM, RVU_AF_PFAF_MBOX_INT);
@@ -2450,18 +2417,6 @@ static irqreturn_t rvu_mbox_pf_intr_handler(int irq, void *rvu_irq)
 	rmb();
 
 	rvu_queue_work(&rvu->afpf_wq_info, 0, rvu->hw->total_pfs, intr);
-
-	return IRQ_HANDLED;
-}
-
-static irqreturn_t rvu_mbox_intr_handler(int irq, void *rvu_irq)
-{
-	struct rvu *rvu = (struct rvu *)rvu_irq;
-	int vfs = rvu->vfs;
-	u64 intr;
-
-	/* Sync with mbox memory region */
-	rmb();
 
 	/* Handle VF interrupts */
 	if (vfs > 64) {
@@ -2546,12 +2501,6 @@ static void __rvu_flr_handler(struct rvu *rvu, u16 pcifunc)
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_NPA);
 	rvu_reset_lmt_map_tbl(rvu, pcifunc);
 	rvu_detach_rsrcs(rvu, NULL, pcifunc);
-	/* In scenarios where PF/VF drivers detach NIXLF without freeing MCAM
-	 * entries, check and free the MCAM entries explicitly to avoid leak.
-	 * Since LF is detached use LF number as -1.
-	 */
-	rvu_npc_free_mcam_entries(rvu, pcifunc, -1);
-
 	mutex_unlock(&rvu->flr_lock);
 }
 
@@ -2790,7 +2739,7 @@ static int rvu_register_interrupts(struct rvu *rvu)
 	/* Register mailbox interrupt handler */
 	sprintf(&rvu->irq_name[RVU_AF_INT_VEC_MBOX * NAME_SIZE], "RVUAF Mbox");
 	ret = request_irq(pci_irq_vector(rvu->pdev, RVU_AF_INT_VEC_MBOX),
-			  rvu_mbox_pf_intr_handler, 0,
+			  rvu_mbox_intr_handler, 0,
 			  &rvu->irq_name[RVU_AF_INT_VEC_MBOX * NAME_SIZE], rvu);
 	if (ret) {
 		dev_err(rvu->dev,
